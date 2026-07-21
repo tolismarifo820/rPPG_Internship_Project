@@ -35,3 +35,8 @@ rPPG_Internship_Project/
 ├── roi/                        # ROI manager and spatial extraction strategies
 ├── signals/                    # RGB extraction, buffering, preprocessing, and filtering
 └── tests/                      # Unit testing suite
+
+Author
+Apostolos Marifoglou
+Student, School of Electrical and Computer Engineering
+Aristotle University of Thessaloniki (AUTH)
