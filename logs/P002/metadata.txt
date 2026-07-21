@@ -1,3 +1,0 @@
-ParticipantID: P002
-CreatedAt: 2026-07-21T12:37:52.269833
-Controls: SPACE=start/pause acquisition, M=method, N=new participant, T=theme, S=snapshot, Q=quit

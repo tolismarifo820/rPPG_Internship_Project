@@ -1,6 +1,0 @@
-Timestamp,ParticipantsCreated,CompletedAcquisitions,ValidAcquisitions,LowQualityAcquisitions,ResetAcquisitions,MeanSQI,LastParticipantID,LastResult,LastMeanSQI
-2026-07-21T11:52:32.314851,1,0,0,0,0,,P001,CREATED,
-2026-07-21T12:37:52.352196,1,0,0,0,0,,P002,CREATED,
-2026-07-21T12:41:22.900512,1,0,0,0,0,,P003,CREATED,
-2026-07-21T12:42:52.007832,1,0,0,0,0,,P004,CREATED,
-2026-07-21T12:43:50.010728,1,0,0,0,0,,P005,CREATED,
