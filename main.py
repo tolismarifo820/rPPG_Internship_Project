@@ -11,12 +11,13 @@ import numpy as np
 import time
 import datetime as dt
 import traceback
+import config
+import gui.main_window
 from collections import deque
 from queue import Empty
 
 # Configuration & Submodules
 from config import *
-from face.skin_segmentation import *
 from roi.roi_manager import *
 from signals.filtering import *
 from signals.preprocessing import *
@@ -31,6 +32,7 @@ from gui.main_window import *
 from gui.plots import *
 from data_logging.csv_logger import *
 from data_logging.video_export import *
+from data_logging.visualization import generate_session_plot
 
 # ========================================
 # Main Loop
@@ -66,6 +68,8 @@ def main():
 
     rppg_methods_list = list(RPPG_METHODS.keys())
     current_method_idx = 0
+    ROI_MODES = ["FULL_FACE", "FOREHEAD", "LEFT_CHEEK", "RIGHT_CHEEK", "SEGMENTED"]
+    current_roi_idx = 0
 
     # Buffer Initializations
     first_frame = np.zeros((videoHeight, videoWidth, videoChannels), dtype=np.uint8)
@@ -147,7 +151,8 @@ def main():
                 evm_roi_bbox = (x1, y1, x2, y2)
 
                 # Process Mask
-                full_mask, mp_face_ok, mp_face_box, mask_contours = extract_mediapipe_roi(frame, face_mesh)
+                active_roi_name = ROI_MODES[current_roi_idx]
+                full_mask, mp_face_ok, mp_face_box, mask_contours = extract_mediapipe_roi(frame, face_mesh, active_roi_name=ROI_MODES[current_roi_idx])
                 face_detected_now = mp_face_ok and bbox_inside_roi(mp_face_box, evm_roi_bbox)
                 
                 if face_detected_now:
@@ -173,6 +178,10 @@ def main():
                         vitals_roi_bbox = (vx1, vy1, vx2, vy2)
 
                 # Run SQI
+                current_motion_score = 0.0
+                current_brightness_score = 0.0
+                current_periodicity_score = 0.0
+
                 if face_detected_now and vitals_roi is not None:
                     try:
                         roi_gray_for_sqi = cv2.cvtColor(vitals_roi, cv2.COLOR_BGR2GRAY)
@@ -198,33 +207,56 @@ def main():
                     if not face_detected_now: current_sqi_score, current_sqi_label = 0.0, "NO FACE"
 
 
-                # Apply spatial filter to active frame
-                Y, I, Q = bgr_to_yiq(det)
-                lap_pyr = build_laplacian_pyr(Y, levels)
+                # -----------------------------------------------------------------
+                # APPLY DYNAMIC ROI EVM
+                if vitals_roi is not None and vitals_mask is not None:
+                    # 1. Run spatial filter on the dynamic bounding box
+                    blurred = vitals_roi.copy().astype(np.float32)
+                    for _ in range(levels):
+                        blurred = cv2.pyrDown(blurred)
 
-                if not video_pyr_initialized:
-                    for i in range(len(lap_pyr)):
-                        for b in range(bufferSize):
-                            videoPyramid[i][b] = lap_pyr[i]
-                    video_pyr_initialized = True
+                    if not video_pyr_initialized:
+                        # Lock in the spatial dimensions of the very first frame
+                        videoPyramid = np.zeros((bufferSize, blurred.shape[0], blurred.shape[1], 3), dtype=np.float32)
+                        video_pyr_initialized = True
+                    else:
+                        # Extract the locked dimensions from the initialized pyramid
+                        pyr_h, pyr_w = videoPyramid.shape[1], videoPyramid.shape[2]
+                        
+                        # Force the current blurred frame to match the locked dimensions
+                        if blurred.shape[0] != pyr_h or blurred.shape[1] != pyr_w:
+                            blurred = cv2.resize(blurred, (pyr_w, pyr_h))
 
-                for i in range(len(lap_pyr)):
-                    videoPyramid[i][bufferIndex] = lap_pyr[i]
+                    videoPyramid[bufferIndex] = blurred
+                    rolled_pyramid = np.roll(videoPyramid, -bufferIndex - 1, axis=0)
 
-                for i in range(len(lap_pyr)):
-                    fft_level = np.fft.fft(videoPyramid[i], axis=0)
-                    fft_level[~mask] = 0
-                    filtered_level = np.real(np.fft.ifft(fft_level, axis=0))
+                    # 2. Temporal FFT on the sequential buffer
+                    fft_buffer = np.fft.fft(rolled_pyramid, axis=0)
+                    fft_buffer[~mask] = 0  # Frequency bandpass
+                    filtered_buffer = np.real(np.fft.ifft(fft_buffer, axis=0))
 
-                    gain = 0.0 if i < 2 else alpha * (i / levels)
-                    lap_pyr[i] += gain * filtered_level[bufferIndex]
+                    # 3. Extract and upsample the amplified pulse
+                    filtered_frame = filtered_buffer[-1] * alpha
+                    for _ in range(levels):
+                        filtered_frame = cv2.pyrUp(filtered_frame)
 
-                Y_mag = collapse_laplacian_pyr(lap_pyr)
-                I *= chromAttenuation
-                Q *= chromAttenuation
+                    filtered_frame = cv2.resize(filtered_frame, (vitals_roi.shape[1], vitals_roi.shape[0]))
 
-                out_det = yiq_to_bgr(Y_mag, I, Q)
-                frame[y1:y2, x1:x2, :] = out_det
+                    # 4. ISOLATE EVM TO THE DYNAMIC ROI MASK
+                    # vitals_mask is 255 for skin and 0 for background. Normalize it to 0.0 and 1.0.
+                    binary_mask = (vitals_mask > 0).astype(np.float32)
+                    roi_mask_3d = np.expand_dims(binary_mask, axis=-1)
+
+                    # Multiply the amplified pulse by the mask. Background pulses become 0.0
+                    masked_pulse = filtered_frame * roi_mask_3d
+
+                    # 5. Add the masked pulse back to the dynamic bounding box
+                    out_vitals = vitals_roi.astype(np.float32) + masked_pulse
+                    out_vitals = np.clip(out_vitals, 0, 255).astype(np.uint8)
+
+                    # 6. Update the frame and the vitals_roi for the subsequent rPPG extraction
+                    frame[vy1:vy2, vx1:vx2, :] = out_vitals
+                    vitals_roi = out_vitals  # Overwrite so the next block extracts from the amplified image
 
                 # -----------------------------------------------------------------
                 # Extract Color signals
@@ -248,10 +280,14 @@ def main():
 
                 current_method_name = rppg_methods_list[current_method_idx]
                 
+                # Calculate core signals in the background for the CSV logger and plot generator
+                sig_green = extract_green(r_rolled, g_rolled, b_rolled)
+                sig_chrom = extract_chrom(r_rolled, g_rolled, b_rolled)
+                sig_pos = extract_pos(r_rolled, g_rolled, b_rolled)
+
                 # Fetch the correct function from the dictionary and execute it
                 extraction_function = RPPG_METHODS[current_method_name]
                 active_signal = extraction_function(r_rolled, g_rolled, b_rolled)
-                # -----------------------------------------------------------------
 
                 # Gate frequency analysis behind stabilization requirement
                 if vitals_enabled:
@@ -396,8 +432,8 @@ def main():
                         close_ml_rppg_file(ml_file)
                         close_acquisition_video_writer(acquisition_video_writer)
                         
-                        # Generate the visualization plot automatically
-                        export_session_plot(completed_folder, raw_csv_target)
+                        # Generate the visualization plot by reading the completed CSV
+                        generate_session_plot(completed_folder, raw_csv_target)
 
                         acquisition_video_writer, acquisition_video_path = None, ""
                         csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer, active_session_base = None, None, None, None, None, None, None
@@ -530,10 +566,21 @@ def main():
                 draw_participant_id(canvas, current_participant_id)
 
                 cv2.imshow(WINDOW_NAME, canvas)
-                key = cv2.waitKey(1) & 0xFF
+                
+                # Calculate the required delay to maintain FPS here, instead of at the end
+                elapsed = time.time() - loop_start
+                wait_ms = max(1, int(max(0.0, (1.0 / fps) - elapsed) * 1000))
+                
+                # Listen for the key for the entire duration of the wait_ms
+                key = cv2.waitKey(wait_ms) & 0xFF
                 
                 # Key Handlers
                 if key == ord('q'): break
+                
+                # Key Handlers
+                if key == ord('q'): break
+                elif key == ord('r'):
+                    current_roi_idx = (current_roi_idx + 1) % len(ROI_MODES)
                 elif key == ord('m'):
                     current_method_idx = (current_method_idx + 1) % len(rppg_methods_list)
                 elif key == ord(' '):
@@ -572,28 +619,24 @@ def main():
                     acquisition_video_writer, acquisition_video_path = None, ""
                     csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer, active_session_base = None, None, None, None, None, None, None
 
-                elif key == ord('t'): 
-                    # 1. Update the theme tracker in config
-                    new_theme = "light" if ACTIVE_THEME_NAME == "dark" else "dark"
-                    apply_theme(new_theme)
-                    
-                    # 2. Force the updated dictionary into the modules that rely on them
-                    import gui.main_window
-                    theme_dict = DARK_THEME if new_theme == "dark" else LIGHT_THEME
-                    globals().update(theme_dict)                   # Updates main.py
-                    gui.main_window.__dict__.update(theme_dict)    # Updates main_window.py
+                elif key == ord('t'):
+
+                    config.ACTIVE_THEME_NAME = "light" if config.ACTIVE_THEME_NAME == "dark" else "dark"
+
+                    config.apply_theme(config.ACTIVE_THEME_NAME)
+
+                    theme_dict = config.DARK_THEME if config.ACTIVE_THEME_NAME == "dark" else config.LIGHT_THEME
+
+                    globals().update(theme_dict)
+                    gui.main_window.__dict__.update(theme_dict)
+                    gui.plots.__dict__.update(theme_dict)
 
                 bufferIndex = (bufferIndex + 1) % bufferSize
                 frame_count += 1
                 
             except Exception as e:
-                # Top-level exception handling prevents full application crashes
                 traceback.print_exc()
                 continue
-
-            elapsed = time.time() - loop_start
-            wait_ms = max(1, int(max(0.0, (1.0 / fps) - elapsed) * 1000))
-            cv2.waitKey(wait_ms)
 
     finally:
         stop_event.set()

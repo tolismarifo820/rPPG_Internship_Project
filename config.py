@@ -51,7 +51,7 @@ from queue import Queue, Empty
 # ========================================
 # Configuration
 # ========================================
-realWidth, realHeight = 320, 240
+realWidth, realHeight = 640, 480
 videoWidth, videoHeight = 160, 120
 videoChannels = 3
 fps = 20
@@ -61,20 +61,20 @@ PC_CAMERA_INDEX = 0
 USE_PICAMERA2 = False
 
 # EVM & Signal Extraction limits
-levels = 4
-alpha = 80.0
+levels = 3
+alpha = 30.0
 minFrequency = 0.8          
 maxFrequency = 3          
-chromAttenuation = 0.2
-bufferSize = 75             
-bpmBufferSize = 5        
-bpmCalcEvery = 5           
+chromAttenuation = 1
+bufferSize = 200             
+bpmBufferSize = 30        
+bpmCalcEvery = 5      
 
-SPO2_A = 110
-SPO2_B = 25
+SPO2_A = 128
+SPO2_B = 45
 
 hr_low, hr_high = 0.7, 3.0  
-rr_low, rr_high = 0.1, 0.5
+rr_low, rr_high = 0.15, 0.4
 
 FACE_STABLE_SECONDS_REQUIRED = 10.0
 FADE_IN_SECONDS = 1.2

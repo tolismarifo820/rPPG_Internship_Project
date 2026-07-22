@@ -8,7 +8,7 @@ def extract_ica(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
     mu_r, mu_g, mu_b = np.mean(r), np.mean(g), np.mean(b)
     if mu_r < 1e-3 or mu_g < 1e-3 or mu_b < 1e-3: return g.copy()
     
-    # Normalize each channel as defined for proper ICA separation[cite: 4]
+    # Normalize each channel as defined for proper ICA separation
     rn = (r - mu_r) / (np.std(r) + 1e-6)
     gn = (g - mu_g) / (np.std(g) + 1e-6)
     bn = (b - mu_b) / (np.std(b) + 1e-6)
