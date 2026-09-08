@@ -1,4 +1,4 @@
-# 🍓 Raspberry Pi rPPG & EVM Workshop Dashboard
+#  Raspberry Pi rPPG & EVM Workshop Dashboard
 
 This repository contains the source code for a robust, real-time remote photoplethysmography (rPPG) and Eulerian Video Magnification (EVM) dashboard. It was developed as part of an internship project at the **CENEBIT** (Center of Excellence in Biomedical/Bioengineering and IT) at **AUTH** (Aristotle University of Thessaloniki).
 
