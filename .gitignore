@@ -1,7 +1,8 @@
 __pycache__/
 *.pyc
 logs/
+logs_tif90/
 .venv/
 env/
 venv/
-.vscode/
+.vscode/git status
