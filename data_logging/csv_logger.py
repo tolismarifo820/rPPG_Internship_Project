@@ -1,6 +1,3 @@
-# To call in main:
-# from logging.csv_logger import *
-
 import os
 import csv
 import datetime as dt
@@ -8,8 +5,16 @@ import numpy as np
 import cv2
 from config import LOG_ROOT
 
-def ensure_logs_root(): os.makedirs(LOG_ROOT, exist_ok=True)
-def get_registry_path(): ensure_logs_root(); return os.path.join(LOG_ROOT, "participants_registry.csv")
+# ========================================
+# Directory and Registry Management
+# ========================================
+
+def ensure_logs_root(): 
+    os.makedirs(LOG_ROOT, exist_ok=True)
+
+def get_registry_path(): 
+    ensure_logs_root()
+    return os.path.join(LOG_ROOT, "participants_registry.csv")
 
 def get_next_participant_id():
     ensure_logs_root()
@@ -46,69 +51,98 @@ def register_participant(participant_id):
 
 def create_new_participant():
     participant_id = get_next_participant_id()
-    folder = create_participant_folder(participant_id)
-    register_participant(participant_id)
-    try:
-        with open(os.path.join(folder, "metadata.txt"), "w", encoding="utf-8") as f:
-            f.write(f"ParticipantID: {participant_id}\nCreatedAt: {dt.datetime.now().isoformat()}\nControls: SPACE=start/pause acquisition, M=method, N=new participant, T=theme, S=snapshot, Q=quit\n")
-    except Exception: pass
+    
+    # Just generate the expected path string, don't execute os.makedirs
+    ensure_logs_root()
+    folder = os.path.join(LOG_ROOT, participant_id)
+   
     return participant_id, folder
 
+# ========================================
+# Unified Data Logging Architecture
+# ========================================
+
 def open_participant_session_files(participant_id):
-    folder = create_participant_folder(participant_id)
-    summary_path, raw_path = os.path.join(folder, "summary.csv"), os.path.join(folder, "raw_signals.csv")
-    summary_new = (not os.path.exists(summary_path)) or os.path.getsize(summary_path) == 0
-    raw_new = (not os.path.exists(raw_path)) or os.path.getsize(raw_path) == 0
+    """
+    Initializes a normalized metadata CSV and creates a dedicated images directory.
+    Replaces the old disjointed summary, raw_signals, and rppg_raw_ml logs.
+    """
+    # This physically creates the folder on the drive
+    base_dir = create_participant_folder(participant_id)
+    
+    # NEW: Register the participant to the CSV now that recording has actually begun
+    register_participant(participant_id)
+    
+    # Create a dedicated directory for raw ML image frames
+    images_dir = os.path.join(base_dir, "images")
+    os.makedirs(images_dir, exist_ok=True)
+    
+    metadata_path = os.path.join(base_dir, "metadata.csv")
+    
+    # Check if we need headers (in case of a resumed/reset session)
+    is_new = (not os.path.exists(metadata_path)) or os.path.getsize(metadata_path) == 0
+    
+    metadata_file = open(metadata_path, mode='a', newline='')
+    metadata_writer = csv.writer(metadata_file)
+    
+    if is_new:
+        # Define the strict, normalized schema headers
+        headers = [
+            "Timestamp", "Participant_ID", "Frame_ID", 
+            "Face_Detected", "Vitals_Enabled", "Protocol_State",
+            "Face_X1", "Face_Y1", "Face_X2", "Face_Y2",
+            "Mean_R", "Mean_G", "Mean_B", "EVM_Brightness_Mean", "EVM_Brightness_Std",
+            "Actual_FPS", "Est_HR", "Est_RR", "Est_SpO2",
+            "Active_Method", "Method_Signal",
+            "SQI_Score", "SQI_Label", "Motion_Score", "Brightness_Score", "Periodicity_Score",
+            "Phase_Elapsed", "Total_Elapsed", "ROI_Image_Paths"
+        ]
+        metadata_writer.writerow(headers)
+        metadata_file.flush()
+    
+    return base_dir, images_dir, metadata_file, metadata_writer
 
-    csv_file = open(summary_path, mode="a", newline="")
-    csv_writer = csv.writer(csv_file)
-    if summary_new:
-        csv_writer.writerow(["Timestamp", "ParticipantID", "FaceDetected", "BPM_Raw", "Median_BPM", "RR_Raw", "SpO2_Raw", "ProtocolPhase", "PhaseElapsed", "TotalElapsed"])
-        csv_file.flush()
-
-    raw_file = open(raw_path, mode="a", newline="")
-    raw_writer = csv.writer(raw_file)
-    if raw_new:
-        raw_writer.writerow(["Timestamp", "ParticipantID", "FrameIndex", "FaceDetected", "VitalsEnabled", "StableDuration", "ROI_X1", "ROI_Y1", "ROI_X2", "ROI_Y2", "Mean_R", "Mean_G", "Mean_B", "Brightness_Mean", "Brightness_STD", "FPS_Actual", "BPM_Raw", "HR_Display", "rPPG_Green", "rPPG_Chrom", "rPPG_POS", "RR_Raw", "SpO2_Raw", "SignalQualityScore", "SignalQualityLabel", "MotionScore", "BrightnessScore", "PeriodicityScore", "ProtocolPhase", "PhaseElapsed", "TotalElapsed"])
-        raw_file.flush()
-
-    return folder, csv_file, csv_writer, raw_file, raw_writer
-
-def close_participant_session_files(csv_file, raw_file):
+def close_participant_session_files(metadata_file):
+    """Cleanly flushes and closes the unified metadata file."""
     try:
-        if csv_file is not None: csv_file.close()
+        if metadata_file is not None: 
+            metadata_file.flush()
+            metadata_file.close()
     except Exception: pass
-    try:
-        if raw_file is not None: raw_file.close()
-    except Exception: pass
 
-def open_ml_rppg_file(participant_id):
-    folder = create_participant_folder(participant_id)
-    path = os.path.join(folder, "rppg_raw_ml.csv")
-    new_file = (not os.path.exists(path)) or os.path.getsize(path) == 0
-    ml_file = open(path, mode="a", newline="")
-    ml_writer = csv.writer(ml_file)
-    if new_file:
-        ml_writer.writerow(["Timestamp", "ParticipantID", "FrameIndex", "PhaseElapsed", "ROI_Name", "Mean_R", "Mean_G", "Mean_B", "Mean_Y", "Std_R", "Std_G", "Std_B", "ROI_X1", "ROI_Y1", "ROI_X2", "ROI_Y2", "SignalQualityScore", "SignalQualityLabel"])
-        ml_file.flush()
-    return ml_file, ml_writer
-
-def close_ml_rppg_file(ml_file):
-    try:
-        if ml_file is not None: ml_file.close()
-    except Exception: pass
-
-def write_ml_rppg_row(ml_writer, ml_file, participant_id, frame_index, phase_elapsed, roi_name, roi_img, roi_bbox, signal_quality_score, signal_quality_label):
-    if ml_writer is None or ml_file is None: return
-    if roi_img is None or roi_img.size == 0 or roi_bbox is None: return
-    try:
-        mean_b, mean_g, mean_r = float(np.mean(roi_img[:, :, 0])), float(np.mean(roi_img[:, :, 1])), float(np.mean(roi_img[:, :, 2]))
-        std_b, std_g, std_r = float(np.std(roi_img[:, :, 0])), float(np.std(roi_img[:, :, 1])), float(np.std(roi_img[:, :, 2]))
-        mean_y = float(np.mean(cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)))
+def save_ml_roi_images(images_dir, participant_id, frame_id, candidate_rois, frame):
+    """
+    Saves isolated ROI crops as PNGs and returns a formatted string of their relative paths 
+    to act as foreign keys in the metadata table.
+    """
+    saved_paths = []
+    
+    for roi_name, roi_bbox in candidate_rois.items():
         x1, y1, x2, y2 = roi_bbox
-        ml_writer.writerow([dt.datetime.now().isoformat(), participant_id, frame_index, round(float(phase_elapsed), 3), roi_name, round(mean_r, 5), round(mean_g, 5), round(mean_b, 5), round(mean_y, 5), round(std_r, 5), round(std_g, 5), round(std_b, 5), x1, y1, x2, y2, round(float(signal_quality_score), 3), signal_quality_label])
-        ml_file.flush()
-    except Exception: pass
+        
+        # Ensure coordinates are structurally valid before slicing
+        if x2 > x1 and y2 > y1 and x1 >= 0 and y1 >= 0:
+            roi_img = frame[y1:y2, x1:x2, :]
+            
+            # Prevent empty writes
+            if roi_img.size == 0: continue 
+            
+            # Construct a unique, sortable filename
+            filename = f"{participant_id}_frame_{frame_id:05d}_{roi_name}.png"
+            full_path = os.path.join(images_dir, filename)
+            
+            cv2.imwrite(full_path, roi_img)
+            
+            # Store the relative path mapping
+            saved_paths.append(f"{roi_name}:{os.path.join('images', filename)}")
+            
+    # Return as a single pipe-separated string for CSV parsing
+    return "|".join(saved_paths)
+
+
+# ========================================
+# Workshop and Summary Utilities
+# ========================================
 
 def write_acquisition_summary(participant_id, status, mean_sqi=None, duration_saved=None, mean_hr=None, median_hr=None, mean_rr_raw=None, mean_spo2_raw=None, face_loss_events=0, reset_reason="", acquisition_video_path=""):
     try:

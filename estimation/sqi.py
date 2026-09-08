@@ -6,13 +6,6 @@ import numpy as np
 from collections import deque
 from config import *
 
-def signal_quality_ok(signal, min_std: float = 0.5) -> bool:
-    if signal is None or len(signal) < 30: return False
-    x = np.asarray(signal, dtype=np.float32)
-    if not np.all(np.isfinite(x)): return False
-    if float(np.std(x)) < min_std: return False
-    return True
-
 def robust_mean(values: deque[float]) -> float | None:
     if len(values) < 3: return None
     arr = np.asarray(values, dtype=np.float32)

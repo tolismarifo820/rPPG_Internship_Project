@@ -92,16 +92,27 @@ def draw_waveform_card(canvas, target_box, wave_buffer, method_name):
 
     if len(wave_buffer) > 10:
         plot_data = np.array(list(wave_buffer), dtype=np.float32)
+        
+        # Limit the UI to the last 180 points (6 seconds at 30 FPS) so it isn't squished
+        max_display_points = 180
+        if len(plot_data) > max_display_points:
+            plot_data = plot_data[-max_display_points:]
+            
         plot_data = plot_data - np.mean(plot_data)
         d_min, d_max = plot_data.min(), plot_data.max()
         norm = (plot_data - d_min) / (d_max - d_min) if d_max > d_min + 1e-5 else np.full_like(plot_data, 0.5)
         norm = np.clip(norm, 0.0, 1.0)
             
         plot_h, plot_w = h - 85, w - 50
-        for i in range(len(norm) - 1):
-            p1_x, p1_y = x + 24 + int(i * plot_w / 100), y + 65 + int((1 - norm[i]) * plot_h)
-            p2_x, p2_y = x + 24 + int((i + 1) * plot_w / 100), y + 65 + int((1 - norm[i + 1]) * plot_h)
-            cv2.line(canvas, (p1_x, p1_y), (p2_x, p2_y), ACCENT_PULSE, 2, cv2.LINE_AA)
+        n_points = len(norm)
+        
+        # Prevent division by zero if the buffer is empty or corrupted
+        if n_points > 1:
+            for i in range(n_points - 1):
+                # Dynamically scale the x-coordinates to the actual buffer length
+                p1_x, p1_y = x + 24 + int(i * plot_w / (n_points - 1)), y + 65 + int((1 - norm[i]) * plot_h)
+                p2_x, p2_y = x + 24 + int((i + 1) * plot_w / (n_points - 1)), y + 65 + int((1 - norm[i + 1]) * plot_h)
+                cv2.line(canvas, (p1_x, p1_y), (p2_x, p2_y), ACCENT_PULSE, 2, cv2.LINE_AA)
 
 def draw_protocol_timer_card(canvas, target_box, protocol_state, remaining_seconds):
     x, y, w, h = target_box
@@ -183,7 +194,6 @@ def draw_camera_card(canvas, target_box, frame, evm_roi_bbox=None, mask_contours
         cv2.polylines(canvas, scaled_contours, isClosed=True, color=(0, 255, 255), thickness=1, lineType=cv2.LINE_AA)
 
     cv2.rectangle(canvas, (x, y), (x + w, y + h), BORDER_COLOR, 2)
-    cv2.putText(canvas, "CV.WINDOW", (x + 24, y + 46), cv2.FONT_HERSHEY_DUPLEX, 1.0, TITLE_COLOR, 2, cv2.LINE_AA)
 
 def draw_participant_id(canvas, participant_id):
     # Moved down by changing y offset from + PAD to + 55
@@ -194,9 +204,9 @@ def draw_participant_id(canvas, participant_id):
     cv2.rectangle(canvas, (x, y), (x + w, y + h), ACCENT_INFO, 2)
     cv2.putText(canvas, f"PARTICIPANT: {participant_id}", (x + 16, y + 23), cv2.FONT_HERSHEY_DUPLEX, 0.58, TITLE_COLOR, 1, cv2.LINE_AA)
 
-def draw_acquisition_control(canvas, active: bool):
+def draw_acquisition_control(canvas, active: bool, current_evm_mode: str = "BGR"):
     label = "ACQUISITION: ON" if active else "ACQUISITION: PAUSED"
-    hint = "SPACE: Toggle | M: Method"
+    hint = "SPACE: Toggle | M: Method | E: Mode"
     color = ACCENT_OK if active else ACCENT_WARNING
     
     # Slightly widen the box container to fit everything cleanly
@@ -206,7 +216,8 @@ def draw_acquisition_control(canvas, active: bool):
     cv2.circle(canvas, (x + 15, y + 15), 6, color, -1, cv2.LINE_AA)
     
     cv2.putText(canvas, label, (x + 28, y + 20), cv2.FONT_HERSHEY_DUPLEX, 0.42, TITLE_COLOR, 1, cv2.LINE_AA)
-    cv2.putText(canvas, hint, (x + 165, y + 20), cv2.FONT_HERSHEY_DUPLEX, 0.38, SUBTLE_TEXT, 1, cv2.LINE_AA)
+    cv2.putText(canvas, hint, (x + 160, y + 20), cv2.FONT_HERSHEY_DUPLEX, 0.38, SUBTLE_TEXT, 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"MODE: [{current_evm_mode}]", (x + w - 100, y - 8), cv2.FONT_HERSHEY_DUPLEX, 0.45, ACCENT_INFO, 1, cv2.LINE_AA)
 
 def draw_status_icon(canvas, kind, cx, cy):
     color = {"ok": ACCENT_OK, "info": ACCENT_INFO, "warn": ACCENT_WARNING, "error": ACCENT_ERROR}.get(kind, TITLE_COLOR)

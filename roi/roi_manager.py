@@ -101,3 +101,12 @@ def extract_mediapipe_roi(frame, face_mesh, active_roi_name="FULL_FACE"):
             mp_face_box = (min_x, min_y, max_x - min_x, max_y - min_y)
 
     return full_mask, mp_face_ok, mp_face_box, mask_contours
+
+def generate_soft_mask(raw_mask, erode_ksize=5, erode_iter=2, blur_ksize=15):
+    """Erodes and blurs a binary mask to create a probabilistic float mask."""
+    kernel = np.ones((erode_ksize, erode_ksize), np.uint8)
+    eroded_mask = cv2.erode(raw_mask, kernel, iterations=erode_iter)
+    blurred_mask = cv2.GaussianBlur(eroded_mask, (blur_ksize, blur_ksize), 0)
+    
+    # Return both the rigid eroded mask (for UI) and the float mask (for EVM/extraction)
+    return eroded_mask, blurred_mask.astype(np.float32) / 255.0

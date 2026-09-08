@@ -25,15 +25,19 @@ def generate_session_plot(participant_folder, raw_csv_path):
         with open(raw_csv_path, "r", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if row.get("ProtocolPhase") == "ACQUISITION":
+                # Updated to match the new "Protocol_State" header
+                if row.get("Protocol_State") == "ACQUISITION":
                     try:
-                        t = float(row.get("PhaseElapsed", 0))
+                        # Updated to match "Phase_Elapsed"
+                        t = float(row.get("Phase_Elapsed", 0))
                         
-                        hr = float(row.get("HR_Display")) if row.get("HR_Display") not in ("", None, "None") else np.nan
-                        rr = float(row.get("RR_Raw")) if row.get("RR_Raw") not in ("", None, "None") else np.nan
-                        spo2 = float(row.get("SpO2_Raw")) if row.get("SpO2_Raw") not in ("", None, "None") else np.nan
-                        rppg = float(row.get("rPPG_Chrom")) if row.get("rPPG_Chrom") not in ("", None, "None") else np.nan
+                        # Updated to match "Est_HR", "Est_RR", "Est_SpO2", and "Method_Signal"
+                        hr = float(row.get("Est_HR")) if row.get("Est_HR") not in ("", None, "None") else np.nan
+                        rr = float(row.get("Est_RR")) if row.get("Est_RR") not in ("", None, "None") else np.nan
+                        spo2 = float(row.get("Est_SpO2")) if row.get("Est_SpO2") not in ("", None, "None") else np.nan
+                        rppg = float(row.get("Method_Signal")) if row.get("Method_Signal") not in ("", None, "None") else np.nan
                         
+                        # These remained the same in your new schema
                         r = float(row.get("Mean_R")) if row.get("Mean_R") not in ("", None, "None") else np.nan
                         g = float(row.get("Mean_G")) if row.get("Mean_G") not in ("", None, "None") else np.nan
                         b = float(row.get("Mean_B")) if row.get("Mean_B") not in ("", None, "None") else np.nan
@@ -91,14 +95,14 @@ def generate_session_plot(participant_folder, raw_csv_path):
         plt.tight_layout()
         
         # Save as PNG & PDF vector graphic
-        png_path = os.path.join(participant_folder, "vitals_plot.png")
+        # png_path = os.path.join(participant_folder, "vitals_plot.png")
         pdf_path = os.path.join(participant_folder, "vitals_plot.pdf")
         
-        plt.savefig(png_path, dpi=300, bbox_inches='tight')
+        # plt.savefig(png_path, dpi=300, bbox_inches='tight')
         plt.savefig(pdf_path, format='pdf', bbox_inches='tight')
         plt.close(fig)
         
-        print(f"[Plot Success] Saved plots to:\n -> {png_path}\n -> {pdf_path}")
+        # print(f"[Plot Success] Saved plots to:\n -> {png_path}\n -> {pdf_path}")
         
     except Exception as e:
         print(f"[Plot Error] Plotting failed with exception: {e}")

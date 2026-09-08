@@ -51,27 +51,31 @@ from queue import Queue, Empty
 # ========================================
 # Configuration
 # ========================================
-realWidth, realHeight = 640, 480
-videoWidth, videoHeight = 160, 120
+realWidth, realHeight = 640, 360
+videoWidth, videoHeight = 320, 180
 videoChannels = 3
-fps = 20
+fps = 30
 
 # PC camera configuration
 PC_CAMERA_INDEX = 0
 USE_PICAMERA2 = False
 
 # EVM & Signal Extraction limits
-levels = 3
-alpha = 30.0
-minFrequency = 0.8          
-maxFrequency = 3          
+levels = 4
+# --- EVM Amplification Factors ---
+alpha_bgr = 50.0   # Conservative multiplier for BGR to avoid structural blowouts
+alpha_yiq = 50.0  # Higher multiplier for YIQ since luminance noise is blocked
+minFrequency = 0.7          
+maxFrequency = 3.0          
 chromAttenuation = 1
-bufferSize = 200             
+bufferSize = 300             
 bpmBufferSize = 30        
-bpmCalcEvery = 5      
+bpmCalcEvery = 10
+EVM_CLIP_LIMIT = 50.0  # Adjustable upper and lower bound     
 
-SPO2_A = 128
-SPO2_B = 45
+# Calibrated for webcam ratio ~0.53
+SPO2_A = 105
+SPO2_B = 10
 
 hr_low, hr_high = 0.7, 3.0  
 rr_low, rr_high = 0.15, 0.4
@@ -86,6 +90,21 @@ SCREEN_W = 1280
 SCREEN_H = 720
 CANVAS_W, CANVAS_H = 1280, 720
 PAD = 10
+
+# PC Webcams (DirectShow/V4L2)
+PC_AUTO_EXPOSURE_VAL = 0.25
+PC_EXPOSURE_VAL = -1.0          # Adjust between -2.0 and -5.0 based on room lighting
+PC_AUTO_WB_VAL = 0
+PC_WB_TEMP_VAL = 4500
+PC_FOURCC_CODE = 'YUYV'
+
+# Raspberry Pi Camera (Libcamera controls)
+PICAM2_CONTROLS = {
+    "ExposureTime": 10000, 
+    "AnalogueGain": 1.0, 
+    "AwbEnable": False, 
+    "ColourGains": (1.5, 1.2)
+}
 
 DARK_THEME = {
     "BG_COLOR": (18, 18, 18), "CARD_COLOR": (70, 70, 70), "BORDER_COLOR": (12, 60, 90),
@@ -105,7 +124,7 @@ LIGHT_THEME = {
 
 ACTIVE_THEME_NAME = "light"
 ACQUISITION_ACTIVE_DEFAULT = False
-SQI_WINDOW = 90
+SQI_WINDOW = 135
 SQI_GOOD_THRESHOLD = 70.0
 SQI_FAIR_THRESHOLD = 45.0
 

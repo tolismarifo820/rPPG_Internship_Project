@@ -4,6 +4,7 @@
 import cv2
 import numpy as np
 from config import *
+from scipy.signal import butter, filtfilt
 
 def bgr_to_yiq(img_bgr):
     img = img_bgr.astype(np.float32) / 255.0
@@ -39,3 +40,31 @@ def collapse_laplacian_pyr(pyr):
         up = cv2.pyrUp(current, dstsize=(level.shape[1], level.shape[0]))
         current = up + level
     return current
+
+def bandpass_filter(data, lowcut, highcut, fs, order=2):
+    """
+    Applies a zero-phase Butterworth bandpass filter to isolate the cardiac signal.
+    """
+    # filtfilt requires the data to be longer than the padding length
+    if len(data) < 15:  
+        return data
+        
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    
+    # Guard against exceeding the Nyquist limit
+    if high >= 1.0:
+        high = 0.99
+        
+    b, a = butter(order, [low, high], btype='band')
+    
+    # Calculate a dynamic padding length to prevent crashes on short initial buffers
+    padlen = min(len(data) - 1, 3 * max(len(b), len(a)))
+    
+    try:
+        y = filtfilt(b, a, data, padlen=padlen)
+    except ValueError:
+        y = data  # Fallback if the buffer isn't full enough yet
+        
+    return y

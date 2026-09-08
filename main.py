@@ -6,18 +6,33 @@ Fully Combined Robust Workshop Dashboard + Explicit Mediapipe ROI + EVM + Multi-
 from __future__ import annotations
 
 import os
+import warnings
+
+# =========================================================================
+# Suppress Python Warnings (Protobuf deprecation UserWarnings)
+# =========================================================================
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+# =========================================================================
+# Standard & Third-Party Imports
+# =========================================================================
 import cv2
 import numpy as np
 import time
 import datetime as dt
 import traceback
 import config
+import json
 import gui.main_window
 from collections import deque
 from queue import Empty
 
-# Configuration & Submodules
+# =========================================================================
+# Configuration & Custom Submodules
+# =========================================================================
 from config import *
+from acquisitions.cam_capture import *
 from roi.roi_manager import *
 from signals.filtering import *
 from signals.preprocessing import *
@@ -38,11 +53,51 @@ from data_logging.visualization import generate_session_plot
 # Main Loop
 # ========================================
 def main():
+    # --- Debug & Verbosity Toggles (1 = Enable, 0 = Disable) ---
+    PRINT_CAMERA_SETTINGS   = 1  # Prints camera initialization metadata and hardware settings
+    DEBUG_FACE_TRACKING     = 1  # Logs face detection status, target locking, and ROI stabilization
+    DEBUG_VITALS            = 1  # Outputs real-time Heart Rate (HR), Respiration Rate (RR), and SpO2 calculations
+    DEBUG_SQI               = 1  # Prints Signal Quality Index details (motion, brightness, periodicity)
+    DEBUG_FPS               = 1  # Logs processing loop latency and the actual frames-per-second (FPS)
+    DEBUG_STATE_MACHINE     = 1  # Tracks acquisition protocol phases, successful completions, and reset triggers
+    DEBUG_BEAT_VIS          = 1  # Logs mathematical heartbeat frame captures and timing offsets
+    USE_RAW_CAMERA_SETTINGS = 0  # 1 = Lock raw uncompressed settings (ISP off), 0 = Default auto settings
+
     # Setup Camera
     cap = cv2.VideoCapture(PC_CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, realWidth)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, realHeight)
     cap.set(cv2.CAP_PROP_FPS, fps)
+
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)  # 0.75 forces Windows DirectShow to Auto-Exposure
+    cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+
+    # Conditionally apply raw uncompressed locks based on local toggle
+    if USE_RAW_CAMERA_SETTINGS == 1:
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        cap.set(cv2.CAP_PROP_EXPOSURE, -6.0)       # Adjusted to prevent overexposure
+        cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+        cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4500)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
+        print("[INFO] Raw camera locks applied (ISP disabled).")
+
+        if USE_PICAMERA2 and 'picam2' in globals():
+            picam2.set_controls({
+                "ExposureTime": 10000, 
+                "AnalogueGain": 1.0, 
+                "AwbEnable": False, 
+                "ColourGains": (1.5, 1.2)
+            })
+            print("[INFO] Picamera2 fixed controls applied.")
+    else:
+        # USE_RAW_CAMERA_SETTINGS = 0: Does nothing extra, acts completely like before
+        print("[INFO] Using default camera settings (like before).")
+
+    # Allow hardware to apply settings, then grab the metadata
+    time.sleep(0.5)
+    camera_settings = get_camera_metadata(cap)
+    if PRINT_CAMERA_SETTINGS:
+        print(f"[INFO] Camera initialized. Settings: {camera_settings}")
 
     # Initialize Explicit MediaPipe FaceMesh to prevent the .solutions AttributeError
     face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -67,9 +122,11 @@ def main():
     }
 
     rppg_methods_list = list(RPPG_METHODS.keys())
-    current_method_idx = 0
+    current_method_idx = 2
     ROI_MODES = ["FULL_FACE", "FOREHEAD", "LEFT_CHEEK", "RIGHT_CHEEK", "SEGMENTED"]
-    current_roi_idx = 0
+    current_roi_idx = 1
+    EVM_MODES = ["BGR", "YIQ"]
+    current_evm_idx = 1
 
     # Buffer Initializations
     first_frame = np.zeros((videoHeight, videoWidth, videoChannels), dtype=np.uint8)
@@ -82,7 +139,11 @@ def main():
     red_buffer = np.zeros((bufferSize,), dtype=np.float32)
     blue_buffer = np.zeros((bufferSize,), dtype=np.float32)
     green_buffer = np.zeros((bufferSize,), dtype=np.float32)
-    
+
+    rr_buffer_size = int(fps * 20)
+    long_raw_r = deque(maxlen=rr_buffer_size)
+    long_raw_b = deque(maxlen=rr_buffer_size) 
+
     buffers_initialized = False
     video_pyr_initialized = False
 
@@ -90,7 +151,7 @@ def main():
     prev_roi_gray_for_sqi = None
     current_sqi_score, current_sqi_label = 0.0, "NO FACE"
 
-    bpmBuffer = np.zeros((bpmBufferSize,), dtype=np.float32)
+    bpmBuffer = np.full((bpmBufferSize,), np.nan, dtype=np.float32)
     bpm_all = []
     rr_history, spo2_history = deque(maxlen=10), deque(maxlen=10)
 
@@ -100,6 +161,8 @@ def main():
     current_hr, current_rr, current_spo2 = None, None, None
     
     active_signal = np.zeros(bufferSize, dtype=np.float32)
+    gui_waveform_buffer = deque([0.0] * bufferSize, maxlen=bufferSize)
+    force_waveform_refresh = False
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, SCREEN_W, SCREEN_H)
@@ -107,7 +170,8 @@ def main():
 
 
     # Logging State
-    csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer = None, None, None, None, None, None
+    metadata_file, metadata_writer = None, None
+    images_dir = None
     acquisition_video_writer = None
     acquisition_video_path = ""
     active_session_base = None
@@ -126,6 +190,11 @@ def main():
     face_lost_start_time, poor_sqi_start_time = None, None
     acquisition_sqi_values, acquisition_hr_values, acquisition_rr_raw_values, acquisition_spo2_raw_values = [], [], [], []
     face_loss_events, face_loss_active = 0, False
+    
+    # NEW: Initialize the visualization state
+    beat_vis_state = {"first_frame_captured": False, "target_second_frame": -1.0}
+
+    smoothed_bbox = None
 
     try:
         while True:
@@ -141,12 +210,19 @@ def main():
                         time.sleep(0.05)
                         continue
 
+                    if len(frame.shape) == 3 and frame.shape[2] == 2:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUYV)
+
                 frame = cv2.resize(frame, (realWidth, realHeight))
                 raw_frame_for_video = frame.copy()
                 
                 # EVM Target Bounding Box
-                y1, y2 = videoHeight // 2, realHeight - videoHeight // 2
-                x1, x2 = videoWidth // 2, realWidth - videoWidth // 2
+                margin_x = int(realWidth * 0.05)   # 5% margin from edges
+                margin_y = int(realHeight * 0.05)  # 5% margin from top/bottom
+
+                x1, y1 = margin_x, margin_y
+                x2, y2 = realWidth - margin_x, realHeight - margin_y
+
                 det = frame[y1:y2, x1:x2, :]
                 evm_roi_bbox = (x1, y1, x2, y2)
 
@@ -156,27 +232,53 @@ def main():
                 face_detected_now = mp_face_ok and bbox_inside_roi(mp_face_box, evm_roi_bbox)
                 
                 if face_detected_now:
-                    if stable_face_start_time is None: stable_face_start_time = time.time()
+                    if stable_face_start_time is None: 
+                        stable_face_start_time = time.time()
+                        if DEBUG_FACE_TRACKING == 1: print("[FACE] Face detected. Locking...")
+                    
                     stable_duration = time.time() - stable_face_start_time
                     prev_enabled = vitals_enabled
                     vitals_enabled = stable_duration >= FACE_STABLE_SECONDS_REQUIRED
-                    if vitals_enabled and not prev_enabled: vitals_unlocked_time = time.time()
+                    
+                    if vitals_enabled and not prev_enabled: 
+                        vitals_unlocked_time = time.time()
+                        force_waveform_refresh = True  # Instantly flush the raw noise and display the filtered wave
+                        if DEBUG_FACE_TRACKING == 1: print("[FACE] Target locked. Vitals active.")
                 else:
+                    if vitals_enabled and DEBUG_FACE_TRACKING == 1: print("[FACE] Face lost.")
                     stable_face_start_time, stable_duration = None, 0.0
                     vitals_enabled, vitals_unlocked_time = False, None
-
-                vitals_roi, vitals_mask = None, None
+                vitals_roi, vitals_mask, vitals_mask_float = None, None, None
                 vitals_roi_bbox = None
 
                 if mp_face_box is not None:
-                    vx1, vy1, vw, vh = mp_face_box
+                    raw_x, raw_y, raw_w, raw_h = mp_face_box
+                    
+                    # NEW: Apply Exponential Moving Average (EMA) to smooth the box
+                    if smoothed_bbox is None or not face_detected_now:
+                        smoothed_bbox = [raw_x, raw_y, raw_w, raw_h]
+                    else:
+                        # 15% new frame data, 85% previous frame data (highly stable)
+                        alpha_smooth = 0.15 
+                        smoothed_bbox[0] = (1.0 - alpha_smooth) * smoothed_bbox[0] + alpha_smooth * raw_x
+                        smoothed_bbox[1] = (1.0 - alpha_smooth) * smoothed_bbox[1] + alpha_smooth * raw_y
+                        smoothed_bbox[2] = (1.0 - alpha_smooth) * smoothed_bbox[2] + alpha_smooth * raw_w
+                        smoothed_bbox[3] = (1.0 - alpha_smooth) * smoothed_bbox[3] + alpha_smooth * raw_h
+
+                    # Unpack the smoothed integers
+                    vx1, vy1, vw, vh = [int(v) for v in smoothed_bbox]
+                    
                     vx2, vy2 = clamp(vx1 + vw, 1, realWidth), clamp(vy1 + vh, 1, realHeight)
                     vx1, vy1 = clamp(vx1, 0, realWidth - 1), clamp(vy1, 0, realHeight - 1)
                     if vx2 > vx1 and vy2 > vy1:
                         vitals_roi = frame[vy1:vy2, vx1:vx2, :]
-                        vitals_mask = full_mask[vy1:vy2, vx1:vx2]
+                        raw_mask = full_mask[vy1:vy2, vx1:vx2]
+                    
+                        # Generate the soft probabilistic mask
+                        vitals_mask, vitals_mask_float = generate_soft_mask(raw_mask)
                         vitals_roi_bbox = (vx1, vy1, vx2, vy2)
-
+                else:
+                    smoothed_bbox = None
                 # Run SQI
                 current_motion_score = 0.0
                 current_brightness_score = 0.0
@@ -200,7 +302,11 @@ def main():
                         current_sqi_score, current_sqi_label = compute_signal_quality_index(
                             current_motion_score, current_brightness_score, current_periodicity_score, face_detected_now, vitals_enabled
                         )
-                    except Exception:
+                        
+                        if DEBUG_SQI == 1 and vitals_enabled and (frame_count % int(fps) == 0):
+                            print(f"[SQI] Score: {current_sqi_score:.1f} ({current_sqi_label}) | M: {current_motion_score:.2f} | B: {current_brightness_score:.2f} | P: {current_periodicity_score:.2f}")
+
+                    except Exception as e:
                         current_sqi_score, current_sqi_label = 0.0, "POOR SIGNAL"
                 else:
                     prev_roi_gray_for_sqi = None
@@ -208,62 +314,94 @@ def main():
 
 
                 # -----------------------------------------------------------------
-                # APPLY DYNAMIC ROI EVM
+                # APPLY DYNAMIC ROI EVM (GAUSSIAN PYRAMID + YIQ TOGGLE)
                 if vitals_roi is not None and vitals_mask is not None:
-                    # 1. Run spatial filter on the dynamic bounding box
-                    blurred = vitals_roi.copy().astype(np.float32)
+                    active_evm_mode = EVM_MODES[current_evm_idx]
+                    
+                    # A. Convert to YIQ if active
+                    if active_evm_mode == "YIQ":
+                        Y, I, Q = bgr_to_yiq(vitals_roi)
+                        processed_roi = cv2.merge([Y, I, Q])
+                    else:
+                        processed_roi = vitals_roi.copy().astype(np.float32)
+
+                    # B. Gaussian Spatial Blur (cv2.pyrDown)
+                    blurred = processed_roi
                     for _ in range(levels):
                         blurred = cv2.pyrDown(blurred)
 
+                    # Lock dimensions for temporal buffer
                     if not video_pyr_initialized:
-                        # Lock in the spatial dimensions of the very first frame
                         videoPyramid = np.zeros((bufferSize, blurred.shape[0], blurred.shape[1], 3), dtype=np.float32)
                         video_pyr_initialized = True
                     else:
-                        # Extract the locked dimensions from the initialized pyramid
                         pyr_h, pyr_w = videoPyramid.shape[1], videoPyramid.shape[2]
-                        
-                        # Force the current blurred frame to match the locked dimensions
                         if blurred.shape[0] != pyr_h or blurred.shape[1] != pyr_w:
                             blurred = cv2.resize(blurred, (pyr_w, pyr_h))
 
                     videoPyramid[bufferIndex] = blurred
                     rolled_pyramid = np.roll(videoPyramid, -bufferIndex - 1, axis=0)
 
-                    # 2. Temporal FFT on the sequential buffer
+                    # C. Temporal FFT (Only runs ONCE per frame!)
                     fft_buffer = np.fft.fft(rolled_pyramid, axis=0)
-                    fft_buffer[~mask] = 0  # Frequency bandpass
+                    fft_buffer[~mask] = 0  
                     filtered_buffer = np.real(np.fft.ifft(fft_buffer, axis=0))
 
-                    # 3. Extract and upsample the amplified pulse
-                    filtered_frame = filtered_buffer[-1] * alpha
+                    # D. Apply Dynamic Alpha from config.py based on Mode
+                    if active_evm_mode == "YIQ":
+                        current_alpha = alpha_yiq
+                    else:
+                        current_alpha = alpha_bgr
+                        
+                    filtered_frame = filtered_buffer[-1] * current_alpha
+                    
+                    # E. ZERO OUT LUMINANCE (The YIQ Magic step to block lighting noise)
+                    if active_evm_mode == "YIQ":
+                        filtered_frame[:, :, 0] = 0.0
+
+                    # F. Scale back up (cv2.pyrUp)
                     for _ in range(levels):
                         filtered_frame = cv2.pyrUp(filtered_frame)
-
                     filtered_frame = cv2.resize(filtered_frame, (vitals_roi.shape[1], vitals_roi.shape[0]))
 
-                    # 4. ISOLATE EVM TO THE DYNAMIC ROI MASK
-                    # vitals_mask is 255 for skin and 0 for background. Normalize it to 0.0 and 1.0.
-                    binary_mask = (vitals_mask > 0).astype(np.float32)
-                    roi_mask_3d = np.expand_dims(binary_mask, axis=-1)
+                    # G. Mask and Clamp Shockwaves using the soft gradient
+                    roi_mask_3d = np.expand_dims(vitals_mask_float, axis=-1)
+                    masked_pulse = np.clip(filtered_frame * roi_mask_3d, -EVM_CLIP_LIMIT, EVM_CLIP_LIMIT)
 
-                    # Multiply the amplified pulse by the mask. Background pulses become 0.0
-                    masked_pulse = filtered_frame * roi_mask_3d
+                    # H. Add back and convert to BGR
+                    if active_evm_mode == "YIQ":
+                        out_vitals = processed_roi + masked_pulse
+                        out_Y, out_I, out_Q = cv2.split(out_vitals)
+                        out_vitals = yiq_to_bgr(out_Y, out_I, out_Q)
+                    else:
+                        out_vitals = processed_roi + masked_pulse
+                        out_vitals = np.clip(out_vitals, 0, 255).astype(np.uint8)
 
-                    # 5. Add the masked pulse back to the dynamic bounding box
-                    out_vitals = vitals_roi.astype(np.float32) + masked_pulse
-                    out_vitals = np.clip(out_vitals, 0, 255).astype(np.uint8)
-
-                    # 6. Update the frame and the vitals_roi for the subsequent rPPG extraction
+                    # Overwrite so the next block extracts from the amplified image
                     frame[vy1:vy2, vx1:vx2, :] = out_vitals
-                    vitals_roi = out_vitals  # Overwrite so the next block extracts from the amplified image
+                    vitals_roi = out_vitals
 
                 # -----------------------------------------------------------------
-                # Extract Color signals
-                if vitals_roi is not None and vitals_mask is not None:
-                    mean_colors = cv2.mean(vitals_roi, mask=vitals_mask)
-                    r_val, g_val, b_val = float(mean_colors[2]), float(mean_colors[1]), float(mean_colors[0])
+                # Extract Color signals (Split Pipeline)
+                if vitals_roi is not None and vitals_mask_float is not None:
+                    # TRACK 1: HR & UI (From the EVM amplified 'out_vitals')
+                    b_val, g_val, r_val = compute_weighted_mean(out_vitals, vitals_mask_float)
                     
+                    # TRACK 2: SpO2 & RR (From the pure 'raw_frame_for_video')
+                    vx1, vy1, vx2, vy2 = vitals_roi_bbox
+                    raw_roi = raw_frame_for_video[vy1:vy2, vx1:vx2, :]
+                    raw_b_val, _, raw_r_val = compute_weighted_mean(raw_roi, vitals_mask_float)
+
+                    # Feed the 20-second queues
+                    long_raw_r.append(raw_r_val)
+                    long_raw_b.append(raw_b_val)
+
+                    if r_val == 0.0 and g_val == 0.0 and b_val == 0.0 and buffers_initialized:
+                        prev_idx = (bufferIndex - 1) % bufferSize
+                        r_val = float(red_buffer[prev_idx])
+                        g_val = float(green_buffer[prev_idx])
+                        b_val = float(blue_buffer[prev_idx])
+
                     if not buffers_initialized:
                         red_buffer[:] = r_val
                         green_buffer[:] = g_val
@@ -279,15 +417,25 @@ def main():
                 b_rolled = np.roll(blue_buffer, -bufferIndex - 1)
 
                 current_method_name = rppg_methods_list[current_method_idx]
-                
-                # Calculate core signals in the background for the CSV logger and plot generator
-                sig_green = extract_green(r_rolled, g_rolled, b_rolled)
-                sig_chrom = extract_chrom(r_rolled, g_rolled, b_rolled)
-                sig_pos = extract_pos(r_rolled, g_rolled, b_rolled)
 
-                # Fetch the correct function from the dictionary and execute it
                 extraction_function = RPPG_METHODS[current_method_name]
-                active_signal = extraction_function(r_rolled, g_rolled, b_rolled)
+                raw_extracted_signal = extraction_function(r_rolled, g_rolled, b_rolled)
+
+                # 1. Calculate the mathematically pure window for FFT and HR estimation
+                if vitals_enabled:
+                    active_signal = bandpass_filter(raw_extracted_signal, hr_low, hr_high, fps, order=2)
+                else:
+                    active_signal = raw_extracted_signal
+
+                # 2. Build the stitched buffer strictly for the UI to prevent visual bouncing
+                if force_waveform_refresh:
+                    gui_waveform_buffer.extend(float(val) for val in active_signal)
+                    force_waveform_refresh = False
+                else:
+                    gui_waveform_buffer.append(float(active_signal[-1]))
+                
+                display_waveform = np.array(gui_waveform_buffer, dtype=np.float32)
+
 
                 # Gate frequency analysis behind stabilization requirement
                 if vitals_enabled:
@@ -295,33 +443,99 @@ def main():
                     window = np.hanning(len(signal_centered))
                     signal_fft = np.abs(np.fft.fft(signal_centered * window))
                     
+                    # Apply EMA smoothing to the spectrum bins to stop frantic updating
+                    alpha_spectrum = 0.2  # 20% new data, 80% historical smoothing
                     for b in range(bufferSize): 
-                        fftAvg[b] = signal_fft[b]
+                        fftAvg[b] = (alpha_spectrum * signal_fft[b]) + ((1.0 - alpha_spectrum) * fftAvg[b])
 
                     if bufferIndex % bpmCalcEvery == 0:
+                        # 1. Isolate the physiological frequency band
                         hr_mask = (freqs >= hr_low) & (freqs <= hr_high)
-                        bpm = estimate_peak_bpm(active_signal, fps, hr_low, hr_high)
                         
-                        bpmBuffer[bpmBufferIndex] = bpm
-                        bpmBufferIndex = (bpmBufferIndex + 1) % bpmBufferSize
-                        bpm_all.append(bpm)
+                        if np.any(hr_mask):
+                            masked_spectrum = fftAvg * hr_mask
+                            peak_index = int(np.argmax(masked_spectrum))
+                            
+                            # 2. Sub-bin Parabolic Interpolation for continuous precision
+                            if 0 < peak_index < len(masked_spectrum) - 1:
+                                alpha = masked_spectrum[peak_index - 1]
+                                beta = masked_spectrum[peak_index]
+                                gamma = masked_spectrum[peak_index + 1]
+                                
+                                # Calculate the fractional offset [-0.5 to 0.5]
+                                denominator = alpha - 2 * beta + gamma
+                                p = 0.5 * (alpha - gamma) / denominator if denominator != 0 else 0.0
+                                
+                                # Apply offset to exact frequency
+                                exact_freq = freqs[peak_index] + p * (freqs[1] - freqs[0])
+                            else:
+                                exact_freq = freqs[peak_index]
+                                
+                            bpm = float(exact_freq * 60.0)
+                        else:
+                            bpm = 0.0
+                            
+                        # 3. SLEW RATE LIMITER (3 BPM / sec constraint)
+                        if len(bpm_all) > 0 and bpm > 0.0:
+                            last_bpm = bpm_all[-1]
+                            max_change = 3.0 * (bpmCalcEvery / fps)
+                            bpm = float(np.clip(bpm, last_bpm - max_change, last_bpm + max_change))
                         
-                        current_hr = bpmBuffer.mean()
+                        # 4. Add to rolling buffers
+                        if bpm > 0.0:
+                            bpmBuffer[bpmBufferIndex] = bpm
+                            bpmBufferIndex = (bpmBufferIndex + 1) % bpmBufferSize
+                            bpm_all.append(bpm)
+                        
+                        # 5. Final output is smoothly averaged
+                        current_hr = np.nanmean(bpmBuffer)
                         rr_mask = (freqs >= rr_low) & (freqs <= rr_high)
 
-                        rr_raw = estimate_peak_bpm(r_rolled, fps, rr_low, rr_high)
-                        if 6 <= rr_raw <= 40 and signal_quality_ok(r_rolled, min_std=0.2): rr_history.append(rr_raw)
-                        rr_smoothed = robust_mean(rr_history)
-                        current_rr = oscillate_in_range(12.0, 20.0, 7.0, time.time()) if rr_smoothed is not None else None
+                        # Only calculate slow vitals if we have at least 10 seconds of history
+                        if len(long_raw_r) >= int(fps * 10):
+                            r_long_array = np.array(long_raw_r, dtype=np.float32)
+                            b_long_array = np.array(long_raw_b, dtype=np.float32)
 
-                        ac_red, dc_red = get_ac_dc(r_rolled, hr_mask)
-                        ac_blue, dc_blue = get_ac_dc(b_rolled, hr_mask)
-                        if dc_red > 1e-6 and dc_blue > 1e-6 and ac_blue > 1e-6 and signal_quality_ok(b_rolled, min_std=0.2):
-                            R = (ac_red / dc_red) / (ac_blue / dc_blue)
-                            spo2_raw = float(SPO2_A - (SPO2_B * R))
-                            if 80 <= spo2_raw <= 100: spo2_history.append(spo2_raw)
-                        spo2_smoothed = robust_mean(spo2_history)
-                        current_spo2 = oscillate_in_range(97.0, 99.0, 8.0, time.time()) if spo2_smoothed is not None else None
+                            # 1. Dedicated Respiratory Filter (0.15 - 0.5 Hz)
+                            r_rr_filtered = bandpass_filter(r_long_array, rr_low, rr_high, fps, order=2)
+                            rr_raw = estimate_peak_bpm(r_rr_filtered, fps, rr_low, rr_high)
+
+                            if 6 <= rr_raw <= 40:
+                                if len(rr_history) > 0:
+                                    last_rr = rr_history[-1]
+                                    rr_raw = float(np.clip(rr_raw, last_rr - 2.0, last_rr + 2.0))
+                                rr_history.append(rr_raw)
+                            
+                            rr_target = robust_mean(rr_history)
+                            if rr_target is not None:
+                                current_rr = rr_target if current_rr is None else (0.2 * rr_target) + (0.8 * current_rr)
+
+                            # 2. Dedicated Cardiac Filter for SpO2 AC Modulation
+                            r_hr_band = bandpass_filter(r_long_array, hr_low, hr_high, fps, order=2)
+                            b_hr_band = bandpass_filter(b_long_array, hr_low, hr_high, fps, order=2)
+
+                            ac_r, dc_r = float(np.std(r_hr_band)), float(np.mean(r_long_array))
+                            ac_b, dc_b = float(np.std(b_hr_band)), float(np.mean(b_long_array))
+
+                            if dc_r > 1e-3 and dc_b > 1e-3 and ac_b > 1e-6:
+                                ratio_of_ratios = (ac_r / dc_r) / (ac_b / dc_b)
+                                spo2_raw = float(np.clip(SPO2_A - (SPO2_B * ratio_of_ratios), 85.0, 100.0))
+                                
+                                if 85.0 <= spo2_raw <= 100.0:
+                                    if len(spo2_history) > 0:
+                                        last_spo2 = spo2_history[-1]
+                                        spo2_raw = float(np.clip(spo2_raw, last_spo2 - 1.0, last_spo2 + 1.0))
+                                    spo2_history.append(spo2_raw)
+
+                            spo2_target = robust_mean(spo2_history)
+                            if spo2_target is not None:
+                                current_spo2 = spo2_target if current_spo2 is None else (0.15 * spo2_target) + (0.85 * current_spo2)
+                        
+                        if DEBUG_VITALS == 1:
+                            h_val = f"{current_hr:.1f}" if current_hr is not None else "N/A"
+                            r_val = f"{current_rr:.1f}" if current_rr is not None else "N/A"
+                            s_val = f"{current_spo2:.1f}" if current_spo2 is not None else "N/A"
+                            print(f"[VITALS] HR: {h_val} BPM | RR: {r_val} Br/min | SpO2: {s_val}%")
                 else: 
                     fftAvg[:] = 0
                     current_hr, current_rr, current_spo2 = None, None, None
@@ -331,7 +545,8 @@ def main():
                     current_hr, current_rr, current_spo2 = None, None, None
                     buffers_initialized, video_pyr_initialized = False, False
                     rr_history.clear(); spo2_history.clear(); bpm_all.clear()
-                    bpmBuffer[:] = 0; sqi_green_buffer.clear(); sqi_brightness_buffer.clear()
+                    bpmBuffer[:] = np.nan; sqi_green_buffer.clear(); sqi_brightness_buffer.clear()
+                    gui_waveform_buffer.extend([0.0] * bufferSize)
 
                 # Process State Machine for Acquisition Protocols & Exports
                 if acquisition_active and protocol_state == PROTOCOL_LOCKING:
@@ -344,17 +559,17 @@ def main():
                         acquisition_sqi_values, acquisition_hr_values, acquisition_rr_raw_values, acquisition_spo2_raw_values = [], [], [], []
                         face_loss_events, face_loss_active = 0, False
                         last_reset_reason, last_completed_valid, last_completed_mean_sqi = "", None, None
+                        
+                        # NEW: Reset visualization state for the new acquisition
+                        beat_vis_state = {"first_frame_captured": False, "target_second_frame": -1.0}
 
                         # DO NOT touch buffers_initialized or video_pyr_initialized here!
                         # This ensures the running EVM filters keep their active history.
 
-                        close_participant_session_files(csv_file, raw_file)
-                        close_ml_rppg_file(ml_file)
+                        close_participant_session_files(metadata_file)
 
-                        active_session_base, csv_file, csv_writer, raw_file, raw_writer = open_participant_session_files(current_participant_id)
-                        ml_file, ml_writer = open_ml_rppg_file(current_participant_id)
+                        active_session_base, images_dir, metadata_file, metadata_writer = open_participant_session_files(current_participant_id)
                         acquisition_video_writer, acquisition_video_path = open_acquisition_video_writer(current_participant_id, realWidth, realHeight, actual_fps if 'actual_fps' in locals() and actual_fps > 0 else fps)
-
                 elif acquisition_active and protocol_state == PROTOCOL_ACQUISITION and acquisition_start_time is not None:
                     total_elapsed = time.time() - acquisition_start_time
                     phase_elapsed = total_elapsed
@@ -385,12 +600,10 @@ def main():
                         reset_reason = f"Signal quality remained below {POOR_SQI_THRESHOLD:.0f}/100 for more than {POOR_SQI_RESET_SECONDS:.0f}s. Please repeat."
 
                     if reset_reason:
-                        close_participant_session_files(csv_file, raw_file)
-                        close_ml_rppg_file(ml_file)
+                        if DEBUG_STATE_MACHINE == 1: print(f"[STATE] Reset: {reset_reason}")
+                        close_participant_session_files(metadata_file)
                         close_acquisition_video_writer(acquisition_video_writer)
                         acquisition_video_writer, acquisition_video_path = None, ""
-                        csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer, active_session_base = None, None, None, None, None, None, None
-
                         acquisition_active = False
                         protocol_state = PROTOCOL_POSITIONING
                         acquisition_start_time = None
@@ -412,9 +625,9 @@ def main():
                         workshop_stats["last_mean_sqi"] = safe_numeric_mean(acquisition_sqi_values)
                         append_workshop_event(current_participant_id, "ACQUISITION_RESET", "RESET", workshop_stats["last_mean_sqi"], reset_reason)
                         write_workshop_stats_snapshot(workshop_stats)
-                        append_acquisition_event(current_participant_id, "RESET", reset_reason)
 
                     elif phase_elapsed >= ACQUISITION_DURATION_SECONDS:
+                        if DEBUG_STATE_MACHINE == 1: print("[STATE] Acquisition Complete.")
                         acquisition_active = False
                         protocol_state = PROTOCOL_COMPLETE
                         remaining_seconds = 0.0
@@ -426,17 +639,22 @@ def main():
 
                         # Capture the folder path before closing files
                         completed_folder = create_participant_folder(current_participant_id)
-                        raw_csv_target = os.path.join(completed_folder, "raw_signals.csv")
+                        metadata_csv_target = os.path.join(completed_folder, "metadata.csv")
+                        
+                        # --- NEW: Save Camera Hardware Settings ---
+                        camera_config_target = os.path.join(completed_folder, "hardware_config.json")
+                        with open(camera_config_target, 'w') as f:
+                            json.dump(camera_settings, f, indent=4)
+                        # ------------------------------------------
 
-                        close_participant_session_files(csv_file, raw_file)
-                        close_ml_rppg_file(ml_file)
+                        close_participant_session_files(metadata_file)
                         close_acquisition_video_writer(acquisition_video_writer)
                         
                         # Generate the visualization plot by reading the completed CSV
-                        generate_session_plot(completed_folder, raw_csv_target)
+                        generate_session_plot(completed_folder, metadata_csv_target)
 
                         acquisition_video_writer, acquisition_video_path = None, ""
-                        csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer, active_session_base = None, None, None, None, None, None, None
+                        metadata_file, metadata_writer, active_session_base, images_dir = None, None, None, None
 
                         stable_face_start_time, vitals_enabled, vitals_unlocked_time = None, False, None
                         face_lost_start_time, poor_sqi_start_time = None, None
@@ -465,74 +683,95 @@ def main():
                         event_msg = f"Completed 30s acquisition. Mean SQI={mean_sqi:.1f}. Valid={last_completed_valid}"
                         append_workshop_event(current_participant_id, "ACQUISITION_COMPLETE", workshop_result, mean_sqi, event_msg)
                         write_workshop_stats_snapshot(workshop_stats)
-                        append_acquisition_event(current_participant_id, "COMPLETE", event_msg)
 
                 elif protocol_state == PROTOCOL_POSITIONING:
                     phase_elapsed, total_elapsed, remaining_seconds = 0.0, 0.0, ACQUISITION_DURATION_SECONDS
 
                 # Handle continuous logging requests based on Protocol
-                if acquisition_active and protocol_state == PROTOCOL_ACQUISITION and acquisition_video_writer is not None:
-                    try: acquisition_video_writer.write(raw_frame_for_video.copy())
-                    except Exception: pass
+                # -----------------------------------------------------------------
+                # UNIFIED LOGGING ARCHITECTURE
+                # -----------------------------------------------------------------
+                if acquisition_active and protocol_state == PROTOCOL_ACQUISITION:
+                    
+                    # 1. Video Writer
+                    if acquisition_video_writer is not None:
+                        try: 
+                            acquisition_video_writer.write(raw_frame_for_video.copy())
+                        except Exception: 
+                            pass
 
-                if acquisition_active and protocol_state == PROTOCOL_ACQUISITION and raw_writer is not None and raw_file is not None:
-                    try:
-                        roi_vals, rgb_vals, brightness_mean, brightness_std = ("", "", "", ""), ("", "", ""), "", ""
-                        if vitals_roi_bbox is not None: roi_vals = vitals_roi_bbox
+                    # 2. Extract ML Images and grab their Foreign Key paths (Using EVM Amplified Frame)
+                    roi_image_paths_str = ""
+                    if mp_face_box is not None:
+                       candidate_rois = extract_candidate_rppg_rois(frame, mp_face_box)
+                       roi_image_paths_str = save_ml_roi_images(images_dir, current_participant_id, frame_count, candidate_rois, frame)
 
-                        if vitals_roi is not None and vitals_mask is not None:
-                            mean_bgr = cv2.mean(vitals_roi, mask=vitals_mask)
-                            rgb_vals = (float(mean_bgr[2]), float(mean_bgr[1]), float(mean_bgr[0]))
+                    # NEW: Process mathematical heartbeat frame extractions
+                    valid_hr = current_hr if current_hr is not None and not np.isnan(current_hr) else 0.0
+                    
+                    beat_vis_state = process_beat_visualizations(
+                        beat_vis_state,
+                        phase_elapsed,       # <--- Pass pure time in seconds
+                        valid_hr,
+                        images_dir,
+                        raw_frame_for_video, # The untouched original
+                        frame,               # The EVM amplified frame
+                        full_mask,           # The MediaPipe mask
+                        debug=DEBUG_BEAT_VIS
+                    )
 
-                            gray_roi = cv2.cvtColor(vitals_roi, cv2.COLOR_BGR2GRAY)
-                            valid_gray = gray_roi[vitals_mask > 0]
-                            if len(valid_gray) > 0:
-                                brightness_mean, brightness_std = float(np.mean(valid_gray)), float(np.std(valid_gray))
+                    # 3. Compile and write the unified Metadata row
+                    if metadata_writer is not None and metadata_file is not None:
+                        try:
+                            f_x1, f_y1, f_x2, f_y2 = ("", "", "", "")
+                            if vitals_roi_bbox is not None: 
+                                f_x1, f_y1, f_x2, f_y2 = vitals_roi_bbox
 
-                        now_loop = time.time()
-                        actual_fps = 1.0 / max(now_loop - prev_loop_time, 1e-6)
-                        prev_loop_time = now_loop
-                        bpm_raw_val = estimate_peak_bpm(active_signal, actual_fps, hr_low, hr_high)
+                            rgb_vals = ("", "", "")
+                            brightness_mean, brightness_std = "", ""
+                            
+                            if vitals_roi is not None and vitals_mask is not None:
+                                mean_bgr = cv2.mean(vitals_roi, mask=vitals_mask)
+                                rgb_vals = (float(mean_bgr[2]), float(mean_bgr[1]), float(mean_bgr[0]))
 
-                        raw_writer.writerow([
-                            dt.datetime.now().isoformat(), current_participant_id, frame_count, int(face_detected_now), int(vitals_enabled),
-                            round(float(stable_duration), 3) if face_detected_now else 0.0, roi_vals[0] if roi_vals else "", roi_vals[1] if roi_vals else "", roi_vals[2] if roi_vals else "", roi_vals[3] if roi_vals else "",
-                            round(rgb_vals[0], 3) if rgb_vals[0] != "" else "", round(rgb_vals[1], 3) if rgb_vals[1] != "" else "", round(rgb_vals[2], 3) if rgb_vals[2] != "" else "",
-                            round(brightness_mean, 3) if brightness_mean != "" else "", round(brightness_std, 3) if brightness_std != "" else "", round(float(actual_fps), 3),
-                            round(float(bpm_raw_val), 2) if face_detected_now else "", round(float(current_hr), 2) if current_hr is not None else "",
-                            round(float(sig_green[bufferIndex]), 4),
-                            round(float(sig_chrom[bufferIndex]), 4),
-                            round(float(sig_pos[bufferIndex]), 4),
-                            round(float(rr_smoothed), 2) if 'rr_smoothed' in locals() and rr_smoothed is not None else "", 
-                            round(float(spo2_smoothed), 2) if 'spo2_smoothed' in locals() and spo2_smoothed is not None else "",
-                            round(float(current_sqi_score), 2), current_sqi_label, round(float(current_motion_score), 2), round(float(current_brightness_score), 2),
-                            round(float(current_periodicity_score), 2), protocol_state, round(float(phase_elapsed), 3), round(float(total_elapsed), 3),
-                        ])
-                        raw_file.flush()
-                    except Exception: pass
+                                gray_roi = cv2.cvtColor(vitals_roi, cv2.COLOR_BGR2GRAY)
+                                valid_gray = gray_roi[vitals_mask > 0]
+                                if len(valid_gray) > 0:
+                                    brightness_mean = float(np.mean(valid_gray))
+                                    brightness_std = float(np.std(valid_gray))
 
-                if acquisition_active and protocol_state == PROTOCOL_ACQUISITION and mp_face_box is not None:
-                    candidate_rois = extract_candidate_rppg_rois(raw_frame_for_video, mp_face_box)
-                    for roi_name, roi_bbox in candidate_rois.items():
-                        x1_roi, y1_roi, x2_roi, y2_roi = roi_bbox
-                        roi_img = raw_frame_for_video[y1_roi:y2_roi, x1_roi:x2_roi, :]
-                        write_ml_rppg_row(ml_writer, ml_file, current_participant_id, frame_count, phase_elapsed, roi_name, roi_img, roi_bbox, current_sqi_score, current_sqi_label)
-
-                if acquisition_active and protocol_state == PROTOCOL_ACQUISITION and csv_writer is not None and csv_file is not None and face_detected_now and vitals_enabled:
-                    try:
-                        bpm_raw_val = estimate_peak_bpm(active_signal, actual_fps if 'actual_fps' in locals() and actual_fps > 0 else fps, hr_low, hr_high)
-                        csv_writer.writerow([
-                            dt.datetime.now().isoformat(), current_participant_id, 1, 
-                            round(float(bpm_raw_val), 2) if current_hr is not None else "", 
-                            round(float(current_hr), 2) if current_hr is not None else "",
-                            round(float(current_rr), 2) if current_rr is not None else "", 
-                            round(float(current_spo2), 2) if current_spo2 is not None else "",
-                            protocol_state, round(float(phase_elapsed), 3), round(float(total_elapsed), 3),
-                        ])
-                        csv_file.flush()
-                    except Exception as e:
-                        print(f"Summary write error: {e}")
-                        pass
+                            now_loop = time.time()
+                            actual_fps = 1.0 / max(now_loop - prev_loop_time, 1e-6)
+                            prev_loop_time = now_loop
+                            
+                            if DEBUG_FPS == 1 and (frame_count % int(fps) == 0):
+                                print(f"[PERF] Target: {fps} FPS | Actual: {actual_fps:.1f} FPS")
+                            row_data = [
+                                dt.datetime.now().isoformat(), current_participant_id, frame_count, 
+                                int(face_detected_now), int(vitals_enabled), protocol_state,
+                                f_x1, f_y1, f_x2, f_y2,
+                                round(rgb_vals[0], 3) if rgb_vals[0] != "" else "", 
+                                round(rgb_vals[1], 3) if rgb_vals[1] != "" else "", 
+                                round(rgb_vals[2], 3) if rgb_vals[2] != "" else "",
+                                round(brightness_mean, 3) if brightness_mean != "" else "", 
+                                round(brightness_std, 3) if brightness_std != "" else "", 
+                                round(float(actual_fps), 3),
+                                round(float(current_hr), 2) if current_hr is not None else "",
+                                round(float(rr_smoothed), 2) if 'rr_smoothed' in locals() and rr_smoothed is not None else "", 
+                                round(float(spo2_smoothed), 2) if 'spo2_smoothed' in locals() and spo2_smoothed is not None else "",
+                                current_method_name,
+                                round(float(active_signal[-1]), 4) if 'active_signal' in locals() and len(active_signal) > 0 else "",
+                                round(float(current_sqi_score), 2), current_sqi_label, 
+                                round(float(current_motion_score), 2), round(float(current_brightness_score), 2),
+                                round(float(current_periodicity_score), 2), 
+                                round(float(phase_elapsed), 3), round(float(total_elapsed), 3),
+                                roi_image_paths_str
+                            ]
+                            
+                            metadata_writer.writerow(row_data)
+                            metadata_file.flush()
+                        except Exception as e:
+                            print(f"Metadata write error: {e}")
 
                 # Fade mapping
                 fade_alpha = 1.0
@@ -552,7 +791,7 @@ def main():
                 # Execute rendering
                 canvas = np.full((CANVAS_H, CANVAS_W, 3), BG_COLOR, dtype=np.uint8)
                 draw_card(canvas, BOX_PULSE, "HEART RATE", pulse_display, "BPM", ACCENT_PULSE, show_pulse_icon=True, current_bpm=current_hr if vitals_enabled else None)
-                draw_waveform_card(canvas, BOX_WAVE, active_signal, current_method_name)
+                draw_waveform_card(canvas, BOX_WAVE, display_waveform, current_method_name)
                 draw_protocol_timer_card(canvas, BOX_EMOTION, protocol_state, remaining_seconds)
                 draw_status_card(canvas, BOX_STATUS, status_items)
                 
@@ -562,7 +801,7 @@ def main():
                 draw_camera_card(canvas, BOX_CAMERA, frame, evm_roi_bbox=evm_roi_bbox, mask_contours=mask_contours)
                 draw_card(canvas, BOX_BR, "RESPIRATION", rr_display, "BR/MIN", ACCENT_BREATH)
                 draw_card(canvas, BOX_SPO2, "OXYGEN", spo2_display, "SpO2 %", ACCENT_OXY)
-                draw_acquisition_control(canvas, acquisition_active)
+                draw_acquisition_control(canvas, acquisition_active, EVM_MODES[current_evm_idx])
                 draw_participant_id(canvas, current_participant_id)
 
                 cv2.imshow(WINDOW_NAME, canvas)
@@ -577,28 +816,34 @@ def main():
                 # Key Handlers
                 if key == ord('q'): break
                 
-                # Key Handlers
-                if key == ord('q'): break
                 elif key == ord('r'):
                     current_roi_idx = (current_roi_idx + 1) % len(ROI_MODES)
                 elif key == ord('m'):
                     current_method_idx = (current_method_idx + 1) % len(rppg_methods_list)
+                    force_waveform_refresh = True
                 elif key == ord(' '):
                     if acquisition_active:
                         acquisition_active, protocol_state = False, PROTOCOL_POSITIONING
-                        close_participant_session_files(csv_file, raw_file)
-                        close_ml_rppg_file(ml_file)
+                        close_participant_session_files(metadata_file)
                         close_acquisition_video_writer(acquisition_video_writer)
                         acquisition_video_writer, acquisition_video_path = None, ""
-                        csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer, active_session_base = None, None, None, None, None, None, None
+                        metadata_file, metadata_writer, active_session_base, images_dir = None, None, None, None
                     else:
                         acquisition_active, protocol_state = True, PROTOCOL_LOCKING
-                        # Keep running buffers & pyramids intact (no clearing/resetting)
+                        
+                        # NEW: Reset visualization state for the new run
+                        beat_vis_state = {"first_frame_captured": False, "target_second_frame": -1.0}
+                        prev_loop_time = time.time()
+                        smoothed_bbox = None
                         
                         # Open the logging files cleanly without wiping your live signal
-                        active_session_base, csv_file, csv_writer, raw_file, raw_writer = open_participant_session_files(current_participant_id)
-                        ml_file, ml_writer = open_ml_rppg_file(current_participant_id)
+                        active_session_base, images_dir, metadata_file, metadata_writer = open_participant_session_files(current_participant_id)
                         acquisition_video_writer, acquisition_video_path = open_acquisition_video_writer(current_participant_id, realWidth, realHeight, actual_fps if 'actual_fps' in locals() and actual_fps > 0 else fps)
+
+                elif key == ord('e'):
+                    current_evm_idx = (current_evm_idx + 1) % len(EVM_MODES)
+                    # Reset the EVM temporal buffer so it doesn't crash on transition
+                    video_pyr_initialized = False
 
                 elif key == ord('n'):
                     current_participant_id, _ = create_new_participant()
@@ -612,12 +857,12 @@ def main():
                     acquisition_active, protocol_state = False, PROTOCOL_POSITIONING
                     buffers_initialized, video_pyr_initialized = False, False
                     rr_history.clear(); spo2_history.clear(); bpm_all.clear()
-                    bpmBuffer[:] = 0; sqi_green_buffer.clear(); sqi_brightness_buffer.clear()
-                    close_participant_session_files(csv_file, raw_file)
-                    close_ml_rppg_file(ml_file)
+                    bpmBuffer[:] = np.nan; sqi_green_buffer.clear(); sqi_brightness_buffer.clear()
+                    gui_waveform_buffer.extend([0.0] * bufferSize)
+                    close_participant_session_files(metadata_file)
                     close_acquisition_video_writer(acquisition_video_writer)
                     acquisition_video_writer, acquisition_video_path = None, ""
-                    csv_file, csv_writer, raw_file, raw_writer, ml_file, ml_writer, active_session_base = None, None, None, None, None, None, None
+                    metadata_file, metadata_writer, active_session_base, images_dir = None, None, None, None
 
                 elif key == ord('t'):
 
@@ -641,8 +886,7 @@ def main():
     finally:
         stop_event.set()
         try:
-            close_participant_session_files(csv_file, raw_file)
-            close_ml_rppg_file(ml_file)
+            close_participant_session_files(metadata_file)
             close_acquisition_video_writer(acquisition_video_writer)
             if USE_PICAMERA2 and picam2 is not None: picam2.stop()
             elif cap is not None: cap.release()

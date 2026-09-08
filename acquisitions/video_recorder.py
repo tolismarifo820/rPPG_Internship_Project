@@ -1,4 +1,4 @@
 # To call in main:
-# from acquisitions.video_reader import *
+# from acquisitions.video_recorder import *
 
 # (Intentionally left empty.)
