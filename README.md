@@ -14,6 +14,9 @@ Designed primarily for deployment on a Raspberry Pi (utilizing the PiCamera2 int
 * **CHROM:** Chrominance-based extraction.
 * **POS:** Plane-Orthogonal-to-Skin extraction.
 * **ICA / PCA:** Blind source separation methods.
+  * **PBV (Projected Blood Volume):** Leverages a blood-volume signature vector to project chrominance signals, maximizing signal-to-noise ratio against motion artifacts.
+  * **SSR (Spatial-Subspace Rotation):** Utilizes spatial redundancies across facial regions to stabilize pulse extraction against subtle head movements.
+  * **LGI (Local Group Invariance):** Enhances robustness by exploiting local spatial intensity relationships across skin patches, minimizing illumination variations.
 
 
 * **Eulerian Video Magnification (EVM):** Features a dynamic Gaussian pyramid implementation with BGR and YIQ mode toggles to visually amplify micro-color changes in the skin caused by blood flow.
