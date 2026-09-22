@@ -9,14 +9,14 @@ Designed primarily for deployment on a Raspberry Pi (utilizing the PiCamera2 int
 ## ✨ Key Features
 
 * **Robust Face Tracking & ROI Extraction:** Utilizes Google's MediaPipe FaceMesh to explicitly extract highly stable Regions of Interest (ROI), isolating the forehead and cheeks for accurate signal extraction while ignoring background noise.
-* **Multi-Method rPPG:** Press a single key to cycle between state-of-the-art rPPG algorithms in real-time:
+* **Multi-Method rPPG & Advanced Extraction:** Press a single key to cycle between state-of-the-art rPPG algorithms in real-time:
 * **GREEN:** Single-channel green extraction.
 * **CHROM:** Chrominance-based extraction.
 * **POS:** Plane-Orthogonal-to-Skin extraction.
 * **ICA / PCA:** Blind source separation methods.
-  * **PBV (Projected Blood Volume):** Leverages a blood-volume signature vector to project chrominance signals, maximizing signal-to-noise ratio against motion artifacts.
-  * **SSR (Spatial-Subspace Rotation):** Utilizes spatial redundancies across facial regions to stabilize pulse extraction against subtle head movements.
-  * **LGI (Local Group Invariance):** Enhances robustness by exploiting local spatial intensity relationships across skin patches, minimizing illumination variations.
+* **PBV (Projected Blood Volume):** Leverages a blood-volume signature vector to project chrominance signals, maximizing signal-to-noise ratio against motion artifacts.
+* **SSR (Spatial-Subspace Rotation):** Utilizes spatial redundancies across facial regions to stabilize pulse extraction against subtle head movements.
+* **LGI (Local Group Invariance):** Enhances robustness by exploiting local spatial intensity relationships across skin patches, minimizing illumination variations.
 
 
 * **Eulerian Video Magnification (EVM):** Features a dynamic Gaussian pyramid implementation with BGR and YIQ mode toggles to visually amplify micro-color changes in the skin caused by blood flow.
@@ -29,26 +29,30 @@ Designed primarily for deployment on a Raspberry Pi (utilizing the PiCamera2 int
 
 ```text
 rPPG_Internship_Project/
-├── acquisitions/          # Camera hardware initialization and capture handling[cite: 1]
-├── data_logging/          # CSV metadata, video exporting, and session visualization[cite: 1]
-├── estimation/            # FFT-based BPM estimation and SQI logic[cite: 1]
-├── face/                  # Facial tracking utility scripts[cite: 1]
-├── gui/                   # Bento Grid UI components and waveform plotters[cite: 1]
-├── methods/               # rPPG extraction algorithms (CHROM, POS, GREEN, etc.)[cite: 1]
-├── plots/                 # Output directory for waveform visualizations[cite: 1]
-├── roi/                   # MediaPipe FaceMesh processing and masks[cite: 1]
-├── rPPG_site/             # Web application prototypes[cite: 1]
-├── signals/               # DSP filtering and preprocessing (Butterworth, etc.)[cite: 1]
-├── tests/                 # Unit tests and isolated script testing[cite: 1]
-├── logs/                  # Local session exports (CSVs, metadata, ML images)[cite: 1]
-├── logs_tif90/            # Directory for Raspberry Pi TIF files[cite: 1]
-├── main.py                # The main application and UI loop[cite: 1]
-├── main.ipynb             # Google Colab-compatible notebook[cite: 4]
-├── config.py              # Global configurations and UI theme data[cite: 1]
-├── requirements.txt       # Project dependencies for pip installation[cite: 3]
-├── after_evm.py           # Post-magnification processing utilities[cite: 1]
-├── *.m                    # MATLAB scripts (Bicoherence.m, CWT.m, PLOTsignals.m)[cite: 1, 4]
-└── tif90*.py              # Hardware-specific optimization scripts for Raspberry Pi[cite: 4]
+├── acquisitions/                # Camera hardware initialization and capture handling
+├── data_logging/                # CSV metadata, video exporting, and session visualization
+├── estimation/                  # FFT-based BPM estimation and SQI logic
+├── face/                        # Facial tracking utility scripts
+├── gui/                         # Bento Grid UI components and waveform plotters
+├── methods/                     # rPPG extraction algorithms (CHROM, POS, GREEN, PBV, etc.)
+├── plots/                       # Output directory for waveform visualizations
+├── roi/                         # MediaPipe FaceMesh processing and masks
+├── rPPG_site/                   # Web application prototypes
+├── signals/                     # DSP filtering and preprocessing (Butterworth, etc.)
+├── tests/                       # Unit tests and isolated script testing
+├── logs/                        # Local session exports (CSVs, metadata, ML images)
+├── logs_tif90/                  # Directory for Raspberry Pi TIF files
+├── main.py                      # The main application and UI loop
+├── main.ipynb                   # Google Colab-compatible notebook
+├── config.py                    # Global configurations and UI theme data
+├── requirements.txt             # Project dependencies for pip installation
+├── after_evm.py                 # Post-magnification processing utilities
+├── evaluate_methods.py          # Script for performance evaluation of extraction methods
+├── extraction_from_same_video.py# Batch processing script for video files
+├── extraction2.py               # Alternative pipeline extraction script
+├── record_raw_video.py          # Utility script for recording raw video inputs
+├── *.m                          # MATLAB analysis scripts (Bicoherence.m, CWT.m, Wavelet.m, etc.)
+└── tif90*.py                    # Hardware-specific optimization scripts for Raspberry Pi
 
 ```
 
