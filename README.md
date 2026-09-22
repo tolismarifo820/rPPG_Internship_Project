@@ -141,4 +141,8 @@ When an acquisition is successfully completed (or reset), the system generates a
 
 * **`metadata.csv`**: Frame-by-frame calculations, timestamps, HR/RR/SpO2 values, SQI (Signal Quality Index) metrics, and bounding box coordinates.
 * **`hardware_config.json`**: The locked camera hardware settings (exposure, white balance) used during the session.
+<<<<<<< HEAD
 * Visual plots and optionally exported video/frame sequences for downstream Machine Learning tasks.
+=======
+* Visual plots and optionally exported video/frame sequences for downstream Machine Learning tasks.
+>>>>>>> 652a6ff (Update pipeline with PBV/LGI methods, enhanced extraction2.py script, and revised README documentation)

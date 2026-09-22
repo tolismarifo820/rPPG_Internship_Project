@@ -48,7 +48,7 @@ FACE_STABLE_SECONDS_REQUIRED = 5.0
 ACQUISITION_DURATION_SEC = 20.0
 TOTAL_RECORD_FRAMES = int(fps * ACQUISITION_DURATION_SEC)
 
-hr_low, hr_high = 0.7, 3.0   
+hr_low, hr_high = 1.0, 1.5   
 rr_low, rr_high = 0.15, 0.5  
 SPO2_A, SPO2_B = 120.0, 25.0
 
@@ -82,7 +82,18 @@ RECORDING_COLOR = (0, 0, 255)
 # ROI MASKS
 # ==============================================================================
 SKIN_REGIONS = {
-    "forehead": [10, 109, 67, 103, 54, 21, 71, 68, 104, 69, 108, 151, 337, 299, 333, 298, 301, 251, 284, 332, 297, 338]
+    "forehead": [10, 109, 67, 103, 54, 21, 71, 68, 104, 69, 108, 151, 337, 299, 333, 298, 301, 251, 284, 332, 297, 338],
+    "left_upper_cheek": [47, 100, 119, 101, 118, 117, 116, 36, 50, 123, 205, 206, 207, 187],
+    "right_upper_cheek": [345, 346, 347, 348, 329, 277, 330, 266, 352, 280, 425, 426, 411, 427]
+}
+
+EXCLUDE_REGIONS = {
+    "left_eye": [263, 249, 390, 373, 374, 380, 381, 382, 362, 466, 388, 387, 386, 385, 384, 398],
+    "right_eye": [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+    "left_eyebrow": [276, 283, 282, 295, 285, 300, 293, 334, 296, 336],
+    "right_eyebrow": [46, 53, 52, 65, 55, 70, 63, 105, 66, 107],
+    "nose": [351, 412, 343, 437, 355, 358, 278, 294, 64, 48, 129, 49, 126, 114, 188, 122, 8, 438, 457, 274, 1, 44, 237, 218],
+    "lips": [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 185, 40, 39, 37, 0, 267, 269, 270, 409, 415, 310, 311, 312, 13, 82, 81, 42, 183, 78],
 }
 
 def get_segmented_mask(frame_shape, landmarks):
@@ -91,6 +102,7 @@ def get_segmented_mask(frame_shape, landmarks):
     landmarks_px = [(min(int(lm.x * w), w - 1), min(int(lm.y * h), h - 1)) for lm in landmarks.landmark]
     def get_hull(indices): return cv2.convexHull(np.array([landmarks_px[i] for i in indices], dtype=np.int32))
     for _, indices in SKIN_REGIONS.items(): cv2.fillPoly(mask, [get_hull(indices)], 255)
+    for _, indices in EXCLUDE_REGIONS.items(): cv2.fillPoly(mask, [get_hull(indices)], 0)
     return mask
 
 def bbox_inside_roi(box, roi):

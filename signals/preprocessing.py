@@ -5,6 +5,23 @@ import cv2
 import numpy as np
 from config import *
 
+def fuse_rppg_signals(signals_list):
+    """Z-score normalizes and averages multiple rPPG waveforms."""
+    if not signals_list:
+        return np.array([])
+    if len(signals_list) == 1:
+        return signals_list[0]
+        
+    normalized_signals = []
+    for sig in signals_list:
+        std_val = np.std(sig)
+        if std_val > 1e-6:
+            normalized_signals.append((sig - np.mean(sig)) / std_val)
+        else:
+            normalized_signals.append(sig - np.mean(sig))
+            
+    return np.mean(normalized_signals, axis=0)
+
 def detrend_linear(signal: np.ndarray) -> np.ndarray:
     """Removes linear drift (like camera auto-exposure adjustments) from a signal."""
     if len(signal) < 2: return signal

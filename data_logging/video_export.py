@@ -116,19 +116,23 @@ def process_beat_visualizations(
 def open_acquisition_video_writer(participant_id, frame_width, frame_height, fps_value):
     try:
         folder = create_participant_folder(participant_id)
-        video_path = os.path.join(folder, "acquisition_30s.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        # 1. Change file extension from .mp4 to .avi
+        video_path = os.path.join(folder, "acquisition_30s.avi")
+        
+        # 2. Use 'MJPG' or 'XVID' for robust AVI recording, 
+        # or use 0 for completely uncompressed raw AVI frames.
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        
         writer = cv2.VideoWriter(video_path, fourcc, float(fps_value), (int(frame_width), int(frame_height)))
+        
         if not writer.isOpened():
-            video_path = os.path.join(folder, "acquisition_30s.avi")
+            # Fallback to XVID if MJPG fails on your specific OS/hardware
             fourcc = cv2.VideoWriter_fourcc(*"XVID")
             writer = cv2.VideoWriter(video_path, fourcc, float(fps_value), (int(frame_width), int(frame_height)))
-        if not writer.isOpened(): return None, ""
+            
+        if not writer.isOpened(): 
+            return None, ""
+            
         return writer, video_path
-    except Exception: return None, ""
-
-
-def close_acquisition_video_writer(video_writer):
-    try:
-        if video_writer is not None: video_writer.release()
-    except Exception: pass
+    except Exception: 
+        return None, ""

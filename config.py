@@ -54,7 +54,7 @@ from queue import Queue, Empty
 realWidth, realHeight = 640, 360
 videoWidth, videoHeight = 320, 180
 videoChannels = 3
-fps = 30
+fps = 15
 
 # PC camera configuration
 PC_CAMERA_INDEX = 0
@@ -63,19 +63,21 @@ USE_PICAMERA2 = False
 # EVM & Signal Extraction limits
 levels = 4
 # --- EVM Amplification Factors ---
-alpha_bgr = 50.0   # Conservative multiplier for BGR to avoid structural blowouts
-alpha_yiq = 50.0  # Higher multiplier for YIQ since luminance noise is blocked
+alpha_bgr = 100.0   # Conservative multiplier for BGR to avoid structural blowouts
+alpha_yiq = 100.0  # Higher multiplier for YIQ since luminance noise is blocked
 minFrequency = 0.7          
 maxFrequency = 3.0          
 chromAttenuation = 1
 bufferSize = 300             
 bpmBufferSize = 30        
 bpmCalcEvery = 10
-EVM_CLIP_LIMIT = 50.0  # Adjustable upper and lower bound     
+EVM_CLIP_LIMIT = 100.0  # Adjustable upper and lower bound     
 
-# Calibrated for webcam ratio ~0.53
-SPO2_A = 105
-SPO2_B = 10
+# --- PBV Signature Vector ---
+PBV_VECTOR = [0.33, 0.77, 0.53]  # Normalized blood volume pulse signature
+
+SPO2_A = 115
+SPO2_B = 17
 
 hr_low, hr_high = 0.7, 3.0  
 rr_low, rr_high = 0.15, 0.4

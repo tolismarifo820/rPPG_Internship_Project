@@ -142,9 +142,8 @@ def extract_mediapipe_roi(frame, face_mesh, scale=0.5):
     h, w = frame.shape[:2]
     small_w, small_h = int(w * scale), int(h * scale)
     small_frame = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
-    rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-    
-    results = face_mesh.process(rgb_frame)
+    results = face_mesh.process(small_frame)
+
     full_mask = np.zeros((h, w), dtype=np.uint8)
     mp_face_ok, mp_face_box, mask_contours = False, None, []
 
@@ -168,30 +167,30 @@ def extract_mediapipe_roi(frame, face_mesh, scale=0.5):
 # ==============================================================================
 # Same linear transforms as the original channel-wise equations, expressed
 # as OpenCV matrix transforms so the work runs in optimized native code.
-BGR_TO_YIQ = np.array([
-    [0.114, 0.587, 0.299],
-    [-0.322, -0.274, 0.596],
-    [0.312, -0.523, 0.211],
+RGB_TO_YIQ = np.array([
+    [0.299, 0.587, 0.114],
+    [0.596, -0.274, -0.322],
+    [0.211, -0.523, 0.312],
 ], dtype=np.float32)
 
-YIQ_TO_BGR = np.array([
-    [1.0, -1.106, 1.703],
-    [1.0, -0.272, -0.647],
+YIQ_TO_RGB = np.array([
     [1.0, 0.956, 0.621],
+    [1.0, -0.272, -0.647],
+    [1.0, -1.106, 1.703],
 ], dtype=np.float32)
 
-_FILTER_CACHE = {}
-
-def bgr_to_yiq(img_bgr):
-    img = img_bgr.astype(np.float32, copy=False)
+def rgb_to_yiq(img_rgb):
+    img = img_rgb.astype(np.float32, copy=False)
     img *= (1.0 / 255.0)
-    yiq = cv2.transform(img, BGR_TO_YIQ)
+    yiq = cv2.transform(img, RGB_TO_YIQ)
     return yiq[:, :, 0], yiq[:, :, 1], yiq[:, :, 2]
 
-def yiq_to_bgr(Y, I, Q):
+def yiq_to_rgb(Y, I, Q):
     yiq = cv2.merge((Y, I, Q))
-    img = cv2.transform(yiq, YIQ_TO_BGR)
+    img = cv2.transform(yiq, YIQ_TO_RGB)
     return (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+
+_FILTER_CACHE = {}
 
 def bandpass_filter(data, lowcut, highcut, fs, order=2):
     if len(data) < 15:
@@ -355,7 +354,7 @@ def main():
             mp_face_mesh = mp.solutions.face_mesh
         else:
             picam2 = Picamera2()
-            picam2.configure(picam2.create_video_configuration(main={"size": (realWidth, realHeight), "format": "BGR888"}))
+            picam2.configure(picam2.create_video_configuration(main={"size": (realWidth, realHeight), "format": "RGB888"}))
             picam2.start()
             time.sleep(2.0)
             mp_face_mesh = mp_face_mesh_module
@@ -421,6 +420,7 @@ def main():
             if RUN_ON_LAPTOP:
                 ret, frame = cap.read()
                 if not ret or frame is None: time.sleep(0.05); continue
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             else:
                 try: frame = picam2.capture_array()
                 except Exception: time.sleep(0.05); continue
@@ -475,7 +475,7 @@ def main():
 
             if vitals_roi is not None and vitals_mask is not None:
                 # 1. Read clean pixel data directly BEFORE applying EVM
-                b_val, g_val, r_val = [float(v) for v in cv2.mean(vitals_roi, mask=vitals_mask)[:3]]
+                r_val, g_val, b_val = [float(v) for v in cv2.mean(vitals_roi, mask=vitals_mask)[:3]]
                 if r_val == 0.0 and g_val == 0.0 and b_val == 0.0 and buffers_initialized:
                     r_val, g_val, b_val = float(red_buffer[bufferIndex-1]), float(green_buffer[bufferIndex-1]), float(blue_buffer[bufferIndex-1])
 
@@ -487,7 +487,7 @@ def main():
 
                 # 2. EVM magnification for display output only
                 processed_roi = (
-                    cv2.merge(bgr_to_yiq(vitals_roi))
+                    cv2.merge(rgb_to_yiq(vitals_roi))
                     if active_evm_mode == "YIQ"
                     else vitals_roi.astype(np.float32, copy=False)
                 )
@@ -558,7 +558,7 @@ def main():
 
                 if active_evm_mode == "YIQ":
                     out_Y, out_I, out_Q = cv2.split(processed_roi + masked_pulse)
-                    frame[vy1:vy2, vx1:vx2, :] = yiq_to_bgr(out_Y, out_I, out_Q)
+                    frame[vy1:vy2, vx1:vx2, :] = yiq_to_rgb(out_Y, out_I, out_Q)
                 else:
                     frame[vy1:vy2, vx1:vx2, :] = np.clip(processed_roi + masked_pulse, 0, 255).astype(np.uint8)
 
@@ -691,7 +691,7 @@ def main():
                 evm_mode=active_evm_mode
             )
 
-            cv2.imshow(WINDOW_NAME, canvas)
+            cv2.imshow(WINDOW_NAME, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
             bufferIndex = (bufferIndex + 1) % bufferSize
             
             wait_ms = max(1, int(max(0.0, (1.0 / fps) - (time.time() - loop_start)) * 1000))
@@ -712,8 +712,8 @@ def main():
                     metadata_records = []
                     if video_writer is not None:
                         video_writer.release()
-                    if SAVE_CAMERA_ACQUISITION:
-                        video_writer = open_acquisition_video_writer(sess_dir, frame, fps)
+                    if SAVE_CAMERA_ACQUISITION and video_writer is not None and raw_frame_for_video is not None:
+                        video_writer.write(cv2.cvtColor(raw_frame_for_video, cv2.COLOR_RGB2BGR))
             elif key == ord('n'):
                 if is_recording:
                     is_recording = False

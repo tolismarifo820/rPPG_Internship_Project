@@ -1,0 +1,14 @@
+av==18.0.0
+matplotlib==3.11.2
+mediapipe==0.10.14
+numpy==2.5.3
+opencv_contrib_python==4.9.0.80
+opencv_python==5.0.0.93
+pandas==3.0.6
+picamera2==0.3.37
+polars==1.44.1
+scikit_learn==1.9.1
+scipy==1.18.1
+seaborn==0.13.2
+streamlit==1.64.0
+streamlit_webrtc==0.78.1

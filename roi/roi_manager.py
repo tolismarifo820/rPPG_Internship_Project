@@ -6,6 +6,7 @@ from .fullface import get_fullface_mask
 from .forehead import get_forehead_mask
 from .cheeks import get_left_cheek_mask, get_right_cheek_mask
 from .segmented import get_segmented_mask
+from .fullface_useful_area import get_fullface_no_features_mask
 
 # ---------------------------------------------------------
 # HELPER FUNCTIONS (At module level for proper importing)
@@ -77,11 +78,13 @@ def extract_mediapipe_roi(frame, face_mesh, active_roi_name="FULL_FACE"):
             full_mask = get_right_cheek_mask(frame.shape, face_landmarks)
         elif active_roi_name == "SEGMENTED":
             full_mask = get_segmented_mask(frame.shape, face_landmarks)
+        elif active_roi_name == "FULLFACE_USEFUL_AREA":                  
+            full_mask = get_fullface_no_features_mask(frame.shape, face_landmarks)
         else:  # Fallback to FULL_FACE
             full_mask = get_fullface_mask(frame.shape, face_landmarks)
 
         # Extract contours to calculate the bounding box for the UI and EVM crop
-        contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(full_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
             mask_contours = contours
@@ -103,10 +106,20 @@ def extract_mediapipe_roi(frame, face_mesh, active_roi_name="FULL_FACE"):
     return full_mask, mp_face_ok, mp_face_box, mask_contours
 
 def generate_soft_mask(raw_mask, erode_ksize=5, erode_iter=2, blur_ksize=15):
-    """Erodes and blurs a binary mask to create a probabilistic float mask."""
+    """Erodes and blurs a binary mask to create a probabilistic float mask, 
+    while strictly preserving excluded interior holes."""
+    
+    # 1. Erode the outer boundaries to ensure the mask doesn't capture background
     kernel = np.ones((erode_ksize, erode_ksize), np.uint8)
     eroded_mask = cv2.erode(raw_mask, kernel, iterations=erode_iter)
+    
+    # 2. Apply Gaussian blur to create the soft gradient edges
     blurred_mask = cv2.GaussianBlur(eroded_mask, (blur_ksize, blur_ksize), 0)
     
+    # 3. THE FIX: Multiply against the original unblurred mask. 
+    # This acts as a cookie-cutter, instantly zeroing out any blur bleed 
+    # that leaked into the explicitly excluded holes (eyes, lips).
+    final_blurred_mask = blurred_mask * (raw_mask > 0)
+    
     # Return both the rigid eroded mask (for UI) and the float mask (for EVM/extraction)
-    return eroded_mask, blurred_mask.astype(np.float32) / 255.0
+    return eroded_mask, final_blurred_mask.astype(np.float32) / 255.0

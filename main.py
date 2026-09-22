@@ -1,8 +1,3 @@
-"""
-Raspberry Pi EVM - Bento Grid UI 
-Fully Combined Robust Workshop Dashboard + Explicit Mediapipe ROI + EVM + Multi-Method rPPG
-"""
-
 from __future__ import annotations
 
 import os
@@ -34,6 +29,7 @@ from queue import Empty
 from config import *
 from acquisitions.cam_capture import *
 from roi.roi_manager import *
+from roi.multi_roi import *
 from signals.filtering import *
 from signals.preprocessing import *
 from methods.green import extract_green
@@ -41,6 +37,8 @@ from methods.chrom import extract_chrom
 from methods.pos import extract_pos
 from methods.ica_based import extract_ica
 from methods.pca_based import extract_pca
+from methods.pbv import extract_pbv
+from methods.lgi import extract_lgi
 from estimation.fft_hr import *
 from estimation.sqi import *
 from gui.main_window import *
@@ -87,7 +85,7 @@ def main():
                 "AnalogueGain": 1.0, 
                 "AwbEnable": False, 
                 "ColourGains": (1.5, 1.2)
-            })
+            }) # Haven't tested this yet
             print("[INFO] Picamera2 fixed controls applied.")
     else:
         # USE_RAW_CAMERA_SETTINGS = 0: Does nothing extra, acts completely like before
@@ -100,7 +98,7 @@ def main():
         print(f"[INFO] Camera initialized. Settings: {camera_settings}")
 
     # Initialize Explicit MediaPipe FaceMesh to prevent the .solutions AttributeError
-    face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5, min_tracking_confidence=0.5) # Haven't tried it with more than 1 face
 
     current_participant_id, _ = create_new_participant()
     
@@ -118,15 +116,44 @@ def main():
     "CHROM": extract_chrom,
     "POS": extract_pos,
     "ICA": extract_ica,
-    "PCA": extract_pca
+    "PCA": extract_pca,
+    "PBV": extract_pbv,
+    "LGI": extract_lgi
     }
 
-    rppg_methods_list = list(RPPG_METHODS.keys())
-    current_method_idx = 2
-    ROI_MODES = ["FULL_FACE", "FOREHEAD", "LEFT_CHEEK", "RIGHT_CHEEK", "SEGMENTED"]
-    current_roi_idx = 1
+    METHODS_CONFIG = [
+        # --- Individual Methods ---
+        ["GREEN"], 
+        ["CHROM"], 
+        ["POS"], 
+        ["LGI"],
+        ["ICA"], 
+        ["PCA"],
+        ["PBV"],
+        # --- Method Combinations ---
+        ["POS", "CHROM"], 
+        ["LGI", "POS"],
+        ["CHROM", "GREEN"],
+        ["POS", "CHROM", "GREEN"],
+        ["PBV", "CHROM"]
+    ]
+    current_method_idx = 6  # Defaults to ["PBV"]
+    
+    ROI_MODES = [
+        # --- Individual ROIs ---
+        ["FULL_FACE"],
+        ["FULLFACE_USEFUL_AREA"], 
+        ["FOREHEAD"], 
+        ["LEFT_CHEEK"], 
+        ["RIGHT_CHEEK"], 
+        ["SEGMENTED"],
+        # --- ROI Combinations ---
+        ["LEFT_CHEEK", "RIGHT_CHEEK"],                           # Both Cheeks
+        ["FOREHEAD", "LEFT_CHEEK", "RIGHT_CHEEK"]               # 3-Region Fusion
+    ]
+    current_roi_idx = 5  # Defaults to ["FOREHEAD"]
     EVM_MODES = ["BGR", "YIQ"]
-    current_evm_idx = 1
+    current_evm_idx = 1 # Defaults to ["YIQ"]
 
     # Buffer Initializations
     first_frame = np.zeros((videoHeight, videoWidth, videoChannels), dtype=np.uint8)
@@ -167,7 +194,6 @@ def main():
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, SCREEN_W, SCREEN_H)
     cv2.moveWindow(WINDOW_NAME, 50, 50)
-
 
     # Logging State
     metadata_file, metadata_writer = None, None
@@ -227,8 +253,8 @@ def main():
                 evm_roi_bbox = (x1, y1, x2, y2)
 
                 # Process Mask
-                active_roi_name = ROI_MODES[current_roi_idx]
-                full_mask, mp_face_ok, mp_face_box, mask_contours = extract_mediapipe_roi(frame, face_mesh, active_roi_name=ROI_MODES[current_roi_idx])
+                active_roi_list = ROI_MODES[current_roi_idx]
+                full_mask, mp_face_ok, mp_face_box, mask_contours = extract_combined_roi(frame, face_mesh, active_roi_list)
                 face_detected_now = mp_face_ok and bbox_inside_roi(mp_face_box, evm_roi_bbox)
                 
                 if face_detected_now:
@@ -254,11 +280,11 @@ def main():
                 if mp_face_box is not None:
                     raw_x, raw_y, raw_w, raw_h = mp_face_box
                     
-                    # NEW: Apply Exponential Moving Average (EMA) to smooth the box
+                    # Apply Exponential Moving Average (EMA) to smooth the box
                     if smoothed_bbox is None or not face_detected_now:
                         smoothed_bbox = [raw_x, raw_y, raw_w, raw_h]
                     else:
-                        # 15% new frame data, 85% previous frame data (highly stable)
+                        # 15% new frame data, 85% previous frame data (hyperparameter can be adjusted for responsiveness vs stability)
                         alpha_smooth = 0.15 
                         smoothed_bbox[0] = (1.0 - alpha_smooth) * smoothed_bbox[0] + alpha_smooth * raw_x
                         smoothed_bbox[1] = (1.0 - alpha_smooth) * smoothed_bbox[1] + alpha_smooth * raw_y
@@ -355,7 +381,7 @@ def main():
                         
                     filtered_frame = filtered_buffer[-1] * current_alpha
                     
-                    # E. ZERO OUT LUMINANCE (The YIQ Magic step to block lighting noise)
+                    # E. ZERO OUT LUMINANCE (The YIQ step to block lighting noise)
                     if active_evm_mode == "YIQ":
                         filtered_frame[:, :, 0] = 0.0
 
@@ -416,14 +442,28 @@ def main():
                 g_rolled = np.roll(green_buffer, -bufferIndex - 1)
                 b_rolled = np.roll(blue_buffer, -bufferIndex - 1)
 
-                current_method_name = rppg_methods_list[current_method_idx]
-
-                extraction_function = RPPG_METHODS[current_method_name]
-                raw_extracted_signal = extraction_function(r_rolled, g_rolled, b_rolled)
+                active_methods = METHODS_CONFIG[current_method_idx]
+                current_method_name = "+".join(active_methods)
+                
+                extracted_signals = []
+                for m_name in active_methods:
+                    extraction_function = RPPG_METHODS[m_name]
+                    
+                    # Only pass fps to the window-based methods that require it
+                    if m_name in ["CHROM", "POS", "PBV"]:
+                        sig = extraction_function(r_rolled, g_rolled, b_rolled, fps=fps)
+                    else:
+                        # For GREEN, ICA, PCA, etc.
+                        sig = extraction_function(r_rolled, g_rolled, b_rolled)
+                        
+                    extracted_signals.append(sig)
+                
+                # Fuse the signals together
+                raw_extracted_signal = fuse_rppg_signals(extracted_signals)
 
                 # 1. Calculate the mathematically pure window for FFT and HR estimation
                 if vitals_enabled:
-                    active_signal = bandpass_filter(raw_extracted_signal, hr_low, hr_high, fps, order=2)
+                    active_signal = bandpass_filter(raw_extracted_signal, hr_low, hr_high, fps, order=5)
                 else:
                     active_signal = raw_extracted_signal
 
@@ -444,7 +484,7 @@ def main():
                     signal_fft = np.abs(np.fft.fft(signal_centered * window))
                     
                     # Apply EMA smoothing to the spectrum bins to stop frantic updating
-                    alpha_spectrum = 0.2  # 20% new data, 80% historical smoothing
+                    alpha_spectrum = 0.2  # 20% new data, 80% historical smoothing (hyperparameter can be adjusted)
                     for b in range(bufferSize): 
                         fftAvg[b] = (alpha_spectrum * signal_fft[b]) + ((1.0 - alpha_spectrum) * fftAvg[b])
 
@@ -475,7 +515,7 @@ def main():
                         else:
                             bpm = 0.0
                             
-                        # 3. SLEW RATE LIMITER (3 BPM / sec constraint)
+                        # 3. SLEW RATE LIMITER (3 BPM / sec constraint) (Found it in bibliography)
                         if len(bpm_all) > 0 and bpm > 0.0:
                             last_bpm = bpm_all[-1]
                             max_change = 3.0 * (bpmCalcEvery / fps)
@@ -497,7 +537,7 @@ def main():
                             b_long_array = np.array(long_raw_b, dtype=np.float32)
 
                             # 1. Dedicated Respiratory Filter (0.15 - 0.5 Hz)
-                            r_rr_filtered = bandpass_filter(r_long_array, rr_low, rr_high, fps, order=2)
+                            r_rr_filtered = bandpass_filter(r_long_array, rr_low, rr_high, fps, order=2) # The order can be adjusted for responsiveness vs smoothness
                             rr_raw = estimate_peak_bpm(r_rr_filtered, fps, rr_low, rr_high)
 
                             if 6 <= rr_raw <= 40:
@@ -511,8 +551,8 @@ def main():
                                 current_rr = rr_target if current_rr is None else (0.2 * rr_target) + (0.8 * current_rr)
 
                             # 2. Dedicated Cardiac Filter for SpO2 AC Modulation
-                            r_hr_band = bandpass_filter(r_long_array, hr_low, hr_high, fps, order=2)
-                            b_hr_band = bandpass_filter(b_long_array, hr_low, hr_high, fps, order=2)
+                            r_hr_band = bandpass_filter(r_long_array, hr_low, hr_high, fps, order=2) # The order can be adjusted for responsiveness vs smoothness
+                            b_hr_band = bandpass_filter(b_long_array, hr_low, hr_high, fps, order=2) # The order can be adjusted for responsiveness vs smoothness
 
                             ac_r, dc_r = float(np.std(r_hr_band)), float(np.mean(r_long_array))
                             ac_b, dc_b = float(np.std(b_hr_band)), float(np.mean(b_long_array))
@@ -529,7 +569,7 @@ def main():
 
                             spo2_target = robust_mean(spo2_history)
                             if spo2_target is not None:
-                                current_spo2 = spo2_target if current_spo2 is None else (0.15 * spo2_target) + (0.85 * current_spo2)
+                                current_spo2 = spo2_target if current_spo2 is None else (0.5 * spo2_target) + (0.5 * current_spo2) # Hyperparameter can be adjusted
                         
                         if DEBUG_VITALS == 1:
                             h_val = f"{current_hr:.1f}" if current_hr is not None else "N/A"
@@ -560,7 +600,7 @@ def main():
                         face_loss_events, face_loss_active = 0, False
                         last_reset_reason, last_completed_valid, last_completed_mean_sqi = "", None, None
                         
-                        # NEW: Reset visualization state for the new acquisition
+                        # Reset visualization state for the new acquisition
                         beat_vis_state = {"first_frame_captured": False, "target_second_frame": -1.0}
 
                         # DO NOT touch buffers_initialized or video_pyr_initialized here!
@@ -577,8 +617,8 @@ def main():
 
                     acquisition_sqi_values.append(float(current_sqi_score))
                     if current_hr is not None: acquisition_hr_values.append(float(current_hr))
-                    if 'rr_smoothed' in locals() and rr_smoothed is not None: acquisition_rr_raw_values.append(float(rr_smoothed))
-                    if 'spo2_smoothed' in locals() and spo2_smoothed is not None: acquisition_spo2_raw_values.append(float(spo2_smoothed))
+                    if current_rr is not None: acquisition_rr_raw_values.append(float(current_rr))
+                    if current_spo2 is not None: acquisition_spo2_raw_values.append(float(current_spo2))
 
                     now_for_validity = time.time()
 
@@ -641,7 +681,7 @@ def main():
                         completed_folder = create_participant_folder(current_participant_id)
                         metadata_csv_target = os.path.join(completed_folder, "metadata.csv")
                         
-                        # --- NEW: Save Camera Hardware Settings ---
+                        # Save Camera Hardware Settings
                         camera_config_target = os.path.join(completed_folder, "hardware_config.json")
                         with open(camera_config_target, 'w') as f:
                             json.dump(camera_settings, f, indent=4)
@@ -706,7 +746,7 @@ def main():
                        candidate_rois = extract_candidate_rppg_rois(frame, mp_face_box)
                        roi_image_paths_str = save_ml_roi_images(images_dir, current_participant_id, frame_count, candidate_rois, frame)
 
-                    # NEW: Process mathematical heartbeat frame extractions
+                    # Process mathematical heartbeat frame extractions
                     valid_hr = current_hr if current_hr is not None and not np.isnan(current_hr) else 0.0
                     
                     beat_vis_state = process_beat_visualizations(
@@ -757,8 +797,8 @@ def main():
                                 round(brightness_std, 3) if brightness_std != "" else "", 
                                 round(float(actual_fps), 3),
                                 round(float(current_hr), 2) if current_hr is not None else "",
-                                round(float(rr_smoothed), 2) if 'rr_smoothed' in locals() and rr_smoothed is not None else "", 
-                                round(float(spo2_smoothed), 2) if 'spo2_smoothed' in locals() and spo2_smoothed is not None else "",
+                                round(float(current_rr), 2) if current_rr is not None else "", 
+                                round(float(current_spo2), 2) if current_spo2 is not None else "",
                                 current_method_name,
                                 round(float(active_signal[-1]), 4) if 'active_signal' in locals() and len(active_signal) > 0 else "",
                                 round(float(current_sqi_score), 2), current_sqi_label, 
@@ -819,7 +859,7 @@ def main():
                 elif key == ord('r'):
                     current_roi_idx = (current_roi_idx + 1) % len(ROI_MODES)
                 elif key == ord('m'):
-                    current_method_idx = (current_method_idx + 1) % len(rppg_methods_list)
+                    current_method_idx = (current_method_idx + 1) % len(METHODS_CONFIG)
                     force_waveform_refresh = True
                 elif key == ord(' '):
                     if acquisition_active:
@@ -831,7 +871,7 @@ def main():
                     else:
                         acquisition_active, protocol_state = True, PROTOCOL_LOCKING
                         
-                        # NEW: Reset visualization state for the new run
+                        # Reset visualization state for the new run
                         beat_vis_state = {"first_frame_captured": False, "target_second_frame": -1.0}
                         prev_loop_time = time.time()
                         smoothed_bbox = None
