@@ -1,8 +1,8 @@
-# Raspberry Pi rPPG & EVM Workshop Dashboard
+# rPPG & EVM Dashboard
 
 This repository contains the source code for a robust, real-time remote photoplethysmography (rPPG) and Eulerian Video Magnification (EVM) dashboard. It was developed as part of an internship project at the **CENEBIT** (Center of Excellence in Biomedical/Bioengineering and IT) at **AUTH** (Aristotle University of Thessaloniki).
 
-Designed primarily for deployment on a Raspberry Pi (utilizing the PiCamera2 interface or standard webcams), the system extracts vital signs (Heart Rate, Respiration Rate, SpO2) using purely optical methods.
+Designed primarily for deployment on a Computer but it includes a modular architecture also for a Raspberry Pi (utilizing the PiCamera2 interface or standard webcams), the system extracts vital signs (Heart Rate, Respiration Rate, SpO2) using purely optical methods.
 
 ---
 
