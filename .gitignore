@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 logs/
 logs_tif90/
+experiment/
 .venv/
 env/
 venv/

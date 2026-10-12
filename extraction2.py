@@ -1,3 +1,4 @@
+# This script extracts rPPG signals from a video file and saves the results to a CSV file. It uses MediaPipe for face detection and ROI extraction, and applies various signal processing techniques to compute the rPPG signals.
 import cv2
 import numpy as np
 import pandas as pd
@@ -161,7 +162,8 @@ def extract_all_signals_to_csv(video_path, output_csv):
                                 out_Y, out_I, out_Q = cv2.split(out_vitals)
                                 out_vitals = yiq_to_bgr(out_Y, out_I, out_Q)
                             else:
-                                out_vitals = np.clip(processed_roi + masked_pulse, 0, 255).astype(np.uint8)
+                                # Remove the integer cast, keep as float32
+                                out_vitals = np.clip(processed_roi + masked_pulse, 0.0, 255.0)
                         
                         b_val, g_val, r_val = compute_weighted_mean(out_vitals, vitals_mask_float)
                         last_valid_r, last_valid_g, last_valid_b = r_val, g_val, b_val
@@ -208,8 +210,23 @@ def extract_all_signals_to_csv(video_path, output_csv):
     df.to_csv(output_csv, index=False)
     print(f"Extraction complete! Saved combinations to {output_csv} with {minimum_valid_frames} uniform frames.")
 
+#if __name__ == "__main__":
+    #target_video = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\experiment\P001\P001_raw.avi"
+    #output_target = r"experiment/P001/all_extracted_signals1.csv"
+    #extract_all_signals_to_csv(target_video, output_target)
+
 if __name__ == "__main__":
-    target_video = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\output_raw4.avi"
-    output_target = r"logs/P026/all_extracted_signals.csv"
+    base_experiment_dir = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\experiment"
     
-    extract_all_signals_to_csv(target_video, output_target)
+    # Find all PXXX folders in the experiment directory
+    participant_folders = [f for f in os.listdir(base_experiment_dir) if f.startswith("P") and f[1:].isdigit()]
+    
+    for p_folder in sorted(participant_folders):
+        target_video = os.path.join(base_experiment_dir, p_folder, f"{p_folder}_raw.avi")
+        output_target = os.path.join(base_experiment_dir, p_folder, f"{p_folder}_extracted_signals.csv")
+        
+        if os.path.exists(target_video):
+            print(f"\n--- Processing {p_folder} ---")
+            extract_all_signals_to_csv(target_video, output_target)
+        else:
+            print(f"[WARN] No raw video found for {p_folder} at {target_video}")

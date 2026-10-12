@@ -71,7 +71,7 @@ chromAttenuation = 1
 bufferSize = 300             
 bpmBufferSize = 30        
 bpmCalcEvery = 10
-EVM_CLIP_LIMIT = 100.0  # Adjustable upper and lower bound     
+EVM_CLIP_LIMIT = 50.0  # Adjustable upper and lower bound     
 
 # --- PBV Signature Vector ---
 PBV_VECTOR = [0.33, 0.77, 0.53]  # Normalized blood volume pulse signature

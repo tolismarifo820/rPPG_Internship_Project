@@ -204,9 +204,9 @@ def export_evm_video(
     print(f"Export complete: {output_video_path}")
 
 if __name__ == "__main__":
-    input_video = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\output_raw4.avi"
-    output_video = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\output_evm_magnified.avi"
-    
+    input_video = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\experiment\P010\P010_raw.avi"
+    output_video = r"C:\Users\tolis\Desktop\Praktiki\rPPG_project\experiment\P010\P010_evm_magnified.avi"
+
     export_evm_video(
         input_video_path=input_video,
         output_video_path=output_video,

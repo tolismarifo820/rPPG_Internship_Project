@@ -4,7 +4,7 @@
 clear; close all; clc;
 
 %% ---------------- Configuration ----------------
-input_file = 'C:\Users\tolis\Desktop\Praktiki\rPPG_project\logs\P026\all_extracted_signals.csv';
+input_file = 'C:\Users\tolis\Desktop\Praktiki\rPPG_project\experiment\P009\P009_extracted_signals.csv';
 
 video_duration = 30;  % Video duration in seconds
 f_low = 0.1;          % Lower bound for CWT computation (must be > 0)

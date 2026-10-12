@@ -5,12 +5,12 @@
 clear; close all; clc;
 
 %% ---------------- Configuration ----------------
-input_file = 'C:\Users\tolis\Desktop\Praktiki\rPPG_project\logs\P026\all_extracted_signals.csv';
+input_file = 'C:\Users\tolis\Desktop\Praktiki\rPPG_project\experiment\P009\P009_extracted_signals.csv';
 
 video_duration = 30;  % Total length of the video in seconds
 nfft = 1024;          % High-resolution frequency grid via zero-padding
 f_low = 0.7;          % Lower bound for cardiac band (~42 BPM)
-f_high = 2.5;         % Upper bound for cardiac band (~150 BPM)
+f_high = 2.5;         % Upper bound for cardiac band (~150 BPM)  
 
 %% ---------------- Load Data ----------------
 if ~isfile(input_file)

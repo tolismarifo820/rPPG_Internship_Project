@@ -913,7 +913,7 @@ def main():
 
                     globals().update(theme_dict)
                     gui.main_window.__dict__.update(theme_dict)
-                    gui.plots.__dict__.update(theme_dict)
+                    
 
                 bufferIndex = (bufferIndex + 1) % bufferSize
                 frame_count += 1
