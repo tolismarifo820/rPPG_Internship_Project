@@ -42,7 +42,6 @@ from methods.lgi import extract_lgi
 from estimation.fft_hr import *
 from estimation.sqi import *
 from gui.main_window import *
-from gui.plots import *
 from data_logging.csv_logger import *
 from data_logging.video_export import *
 from data_logging.visualization import generate_session_plot
